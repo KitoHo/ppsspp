@@ -5,6 +5,7 @@ import java.lang.reflect.Field;
 import java.util.List;
 import java.util.Locale;
 
+import android.Manifest;
 import android.annotation.SuppressLint;
 import android.annotation.TargetApi;
 import android.app.Activity;
@@ -157,6 +158,30 @@ public class NativeActivity extends Activity {
 		}
 	}
 	
+	public static final int REQUEST_CODE_STORAGE_PERMISSION = 1337;
+
+	@TargetApi(23)
+	public void askForStoragePermission() {
+		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+			if (this.checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+				NativeApp.sendMessage("PERMISSION_PENDING", "STORAGE");
+				this.requestPermissions(new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE}, REQUEST_CODE_STORAGE_PERMISSION);
+			} else {
+				NativeApp.sendMessage("PERMISSION_GRANTED", "STORAGE");
+			}
+		}
+	}
+
+	@Override
+	public void onRequestPermissionsResult(int requestCode,
+	        String permissions[], int[] grantResults) {
+		if (requestCode == REQUEST_CODE_STORAGE_PERMISSION && grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+			NativeApp.sendMessage("PERMISSION_GRANTED", "STORAGE");
+		} else {
+			NativeApp.sendMessage("PERMISSION_DENIED", "STORAGE");
+		}
+	}
+
 	public void setShortcutParam(String shortcutParam) {
 		this.shortcutParam = ((shortcutParam == null) ? "" : shortcutParam);
 	}
@@ -172,6 +197,9 @@ public class NativeActivity extends Activity {
         	detectOptimalAudioSettings();
         }
 
+		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+			askForStoragePermission();
+		}
         // isLandscape is used to trigger GetAppInfo currently, we 
         boolean landscape = NativeApp.isLandscape();
         Log.d(TAG, "Landscape: " + landscape);
