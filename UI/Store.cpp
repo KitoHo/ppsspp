@@ -29,6 +29,7 @@
 #include "Common/StringUtils.h"
 #include "Core/Config.h"
 #include "Core/System.h"
+#include "Core/Util/GameManager.h"
 #include "UI/EmuScreen.h"
 #include "UI/Store.h"
 
@@ -400,6 +401,7 @@ void StoreScreen::CreateViews() {
 	} else {
 		content = new LinearLayout(ORIENT_HORIZONTAL, new LinearLayoutParams(FILL_PARENT, FILL_PARENT, 1.0f));
 		ScrollView *leftScroll = new ScrollView(ORIENT_VERTICAL, new LinearLayoutParams(WRAP_CONTENT, FILL_PARENT, 0.4f));
+		leftScroll->SetTag("StoreMainList");
 		content->Add(leftScroll);
 		LinearLayout *scrollItemView = new LinearLayout(ORIENT_VERTICAL, new LayoutParams(FILL_PARENT, WRAP_CONTENT));
 		leftScroll->Add(scrollItemView);
@@ -411,6 +413,7 @@ void StoreScreen::CreateViews() {
 
 		// TODO: Similar apps, etc etc
 		productPanel_ = new ScrollView(ORIENT_VERTICAL, new LinearLayoutParams(0.5f));
+		leftScroll->SetTag("StoreMainProduct");
 		content->Add(productPanel_);
 	}
 	root_->Add(content);

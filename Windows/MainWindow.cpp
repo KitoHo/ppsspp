@@ -47,7 +47,7 @@
 #include "Windows/Debugger/Debugger_Disasm.h"
 #include "Windows/Debugger/Debugger_MemoryDlg.h"
 #include "Windows/GEDebugger/GEDebugger.h"
-#include "Core/MIPS/JitCommon/NativeJit.h"
+#include "Core/MIPS/JitCommon/JitCommon.h"
 #include "Core/MIPS/JitCommon/JitBlockCache.h"
 
 #include "main.h"
@@ -69,6 +69,7 @@
 #include "GPU/GPUInterface.h"
 #include "UI/OnScreenDisplay.h"
 #include "Windows/MainWindowMenu.h"
+#include "UI/GameSettingsScreen.h"
 
 #define MOUSEEVENTF_FROMTOUCH_NOPEN 0xFF515780 //http://msdn.microsoft.com/en-us/library/windows/desktop/ms703320(v=vs.85).aspx
 #define MOUSEEVENTF_MASK_PLUS_PENTOUCH 0xFFFFFF80
@@ -93,6 +94,7 @@ struct VerySleepy_AddrInfo {
 static RECT g_normalRC = {0};
 static std::wstring windowTitle;
 extern InputState input_state;
+extern ScreenManager *screenManager;
 
 #define TIMER_CURSORUPDATE 1
 #define TIMER_CURSORMOVEUPDATE 2
@@ -116,6 +118,7 @@ namespace MainWindow
 	static bool hideCursor = false;
 	static int g_WindowState;
 	static bool g_IgnoreWM_SIZE = false;
+	static bool inResizeMove = false;
 
 	// gross hack
 	bool noFocusPause = false;	// TOGGLE_PAUSE state to override pause on lost focus
@@ -281,6 +284,10 @@ namespace MainWindow
 			NativeMessageReceived("gpu resized", "");
 		}
 
+		if (screenManager) {
+			screenManager->RecreateAllViews();
+		}
+
 		// Don't save the window state if fullscreen.
 		if (!g_Config.bFullScreen) {
 			g_WindowState = newSizingType;
@@ -288,12 +295,10 @@ namespace MainWindow
 	}
 
 	void ToggleFullscreen(HWND hWnd, bool goingFullscreen) {
+		GraphicsContext *graphicsContext = PSP_CoreParameter().graphicsContext;
 		// Make sure no rendering is happening during the switch.
-
-		bool isOpenGL = g_Config.iGPUBackend == GPU_BACKEND_OPENGL;
-
-		if (isOpenGL) {
-			GL_Pause();
+		if (graphicsContext) {
+			graphicsContext->Pause();
 		}
 
 		int oldWindowState = g_WindowState;
@@ -355,9 +360,13 @@ namespace MainWindow
 
 		WindowsRawInput::NotifyMenu();
 
-		if (isOpenGL) {
-			GL_Resume();
+		if (graphicsContext) {
+			graphicsContext->Resume();
 		}
+	}
+
+	void Minimize() {
+		ShowWindow(hwndMain, SW_MINIMIZE);
 	}
 
 	RECT DetermineWindowRectangle() {
@@ -693,13 +702,22 @@ namespace MainWindow
 			SavePosition();
 			break;
 
+		case WM_ENTERSIZEMOVE:
+			inResizeMove = true;
+			break;
+
+		case WM_EXITSIZEMOVE:
+			inResizeMove = false;
+			HandleSizeChange(SIZE_RESTORED);
+			break;
+
 		case WM_SIZE:
 			switch (wParam) {
 			case SIZE_RESTORED:
 			case SIZE_MAXIMIZED:
 				if (g_IgnoreWM_SIZE) {
 					return DefWindowProc(hWnd, message, wParam, lParam);
-				} else {
+				} else if (!inResizeMove) {
 					HandleSizeChange(wParam);
 				}
 				break;
@@ -811,11 +829,11 @@ namespace MainWindow
 				else
 				{
 					TCHAR filename[512];
-					DragQueryFile(hdrop,0,filename,512);
-					TCHAR *type = filename+_tcslen(filename)-3;
-					
-					NativeMessageReceived("boot", ConvertWStringToUTF8(filename).c_str());
-					Core_EnableStepping(false);
+					if (DragQueryFile(hdrop, 0, filename, 512) != 0) {
+						const std::string utf8_filename = ReplaceAll(ConvertWStringToUTF8(filename), "\\", "/");
+						NativeMessageReceived("boot", utf8_filename.c_str());
+						Core_EnableStepping(false);
+					}
 				}
 			}
 			break;

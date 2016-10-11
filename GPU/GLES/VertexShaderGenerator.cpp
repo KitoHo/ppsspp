@@ -34,12 +34,6 @@
 #include "GPU/Common/ShaderId.h"
 #include "GPU/Common/VertexDecoderCommon.h"
 
-// SDL 1.2 on Apple does not have support for OpenGL 3 and hence needs
-// special treatment in the shader generator.
-#ifdef __APPLE__
-#define FORCE_OPENGL_2_0
-#endif
-
 #undef WRITE
 
 #define WRITE p+=sprintf
@@ -115,8 +109,7 @@ void GenerateVertexShader(const ShaderID &id, char *buffer) {
 	bool highpTexcoord = false;
 
 	if (gl_extensions.IsGLES) {
-		// ES doesn't support dual source alpha :(
-		if (gl_extensions.GLES3) {
+		if (gstate_c.featureFlags & GPU_SUPPORTS_GLSL_ES_300) {
 			WRITE(p, "#version 300 es\n");
 			glslES30 = true;
 		} else {
@@ -129,18 +122,16 @@ void GenerateVertexShader(const ShaderID &id, char *buffer) {
 		highpFog = (gl_extensions.bugs & BUG_PVR_SHADER_PRECISION_BAD) ? true : false;
 		highpTexcoord = highpFog;
 	} else {
-		// TODO: Handle this in VersionGEThan?
-
-#if !defined(FORCE_OPENGL_2_0)
-	if (gl_extensions.VersionGEThan(3, 3, 0)) {
-		glslES30 = true;
-		WRITE(p, "#version 330\n");
-	} else if (gl_extensions.VersionGEThan(3, 0, 0)) {
-		WRITE(p, "#version 130\n");
-	} else {
-		WRITE(p, "#version 110\n");
-	}
-#endif
+		if (!gl_extensions.ForceGL2 || gl_extensions.IsCoreContext) {
+			if (gl_extensions.VersionGEThan(3, 3, 0)) {
+				glslES30 = true;
+				WRITE(p, "#version 330\n");
+			} else if (gl_extensions.VersionGEThan(3, 0, 0)) {
+				WRITE(p, "#version 130\n");
+			} else {
+				WRITE(p, "#version 110\n");
+			}
+		}
 
 		// We remove these everywhere - GL4, GL3, Mac-forced-GL2, etc.
 		WRITE(p, "#define lowp\n");
@@ -148,7 +139,7 @@ void GenerateVertexShader(const ShaderID &id, char *buffer) {
 		WRITE(p, "#define highp\n");
 	}
 
-	if (glslES30) {
+	if (glslES30 || gl_extensions.IsCoreContext) {
 		attribute = "in";
 		varying = "out";
 		boneWeightDecl = boneWeightInDecl;
@@ -247,7 +238,7 @@ void GenerateVertexShader(const ShaderID &id, char *buffer) {
 			}
 #endif
 		}
-		if (doTexture && (!prescale || uvGenMode == GE_TEXMAP_ENVIRONMENT_MAP || uvGenMode == GE_TEXMAP_TEXTURE_MATRIX)) {
+		if (doTexture) {
 			WRITE(p, "uniform vec4 u_uvscaleoffset;\n");
 		}
 		for (int i = 0; i < 4; i++) {
@@ -595,7 +586,7 @@ void GenerateVertexShader(const ShaderID &id, char *buffer) {
 			case GE_TEXMAP_UNKNOWN: // Not sure what this is, but Riviera uses it.  Treating as coords works.
 				if (prescale) {
 					if (hasTexcoord) {
-						WRITE(p, "  v_texcoord = texcoord;\n");
+						WRITE(p, "  v_texcoord = texcoord * u_uvscaleoffset.xy;\n");
 					} else {
 						WRITE(p, "  v_texcoord = vec2(0.0);\n");
 					}

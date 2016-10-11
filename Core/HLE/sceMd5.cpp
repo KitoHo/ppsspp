@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2012- PPSSPP Project.
+// Copyright (c) 2012- PPSSPP Project.
 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -22,6 +22,10 @@
 #include "Core/Reporting.h"
 #include "Common/Crypto/md5.h"
 #include "Common/Crypto/sha1.h"
+
+#ifdef USE_CRT_DBG
+#undef new
+#endif
 
 // Not really sure where these belong - is it worth giving them their own file?
 u32 sceKernelUtilsMt19937Init(u32 ctx, u32 seed) {

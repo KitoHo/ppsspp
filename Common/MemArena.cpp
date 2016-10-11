@@ -17,6 +17,7 @@
 
 #include <string>
 
+#include "FileUtil.h"
 #include "MemoryUtil.h"
 #include "MemArena.h"
 
@@ -38,7 +39,6 @@
 
 // Hopefully this ABI will never change...
 
-
 #define ASHMEM_DEVICE	"/dev/ashmem"
 
 /*
@@ -48,8 +48,7 @@
  * `name' is an optional label to give the region (visible in /proc/pid/maps)
  * `size' is the size of the region, in page-aligned bytes
  */
-int ashmem_create_region(const char *name, size_t size)
-{
+int ashmem_create_region(const char *name, size_t size) {
 	int fd, ret;
 
 	fd = open(ASHMEM_DEVICE, O_RDWR);
@@ -58,7 +57,6 @@ int ashmem_create_region(const char *name, size_t size)
 
 	if (name) {
 		char buf[ASHMEM_NAME_LEN];
-
 		strncpy(buf, name, sizeof(buf));
 		ret = ioctl(fd, ASHMEM_SET_NAME, buf);
 		if (ret < 0)
@@ -77,25 +75,26 @@ error:
 	return ret;
 }
 
-int ashmem_set_prot_region(int fd, int prot)
-{
+int ashmem_set_prot_region(int fd, int prot) {
 	return ioctl(fd, ASHMEM_SET_PROT_MASK, prot);
 }
 
-int ashmem_pin_region(int fd, size_t offset, size_t len)
-{
-	struct ashmem_pin pin = { offset, len };
+int ashmem_pin_region(int fd, size_t offset, size_t len) {
+	// Even on 64-bit, it seems these arguments are 32-bit and thus need a cast to avoid warnings.
+	struct ashmem_pin pin = { (uint32_t)offset, (uint32_t)len };
 	return ioctl(fd, ASHMEM_PIN, &pin);
 }
 
-int ashmem_unpin_region(int fd, size_t offset, size_t len)
-{
-	struct ashmem_pin pin = { offset, len };
+int ashmem_unpin_region(int fd, size_t offset, size_t len) {
+	struct ashmem_pin pin = { (uint32_t)offset, (uint32_t)len };
 	return ioctl(fd, ASHMEM_UNPIN, &pin);
 }
 #endif  // Android
 
 #ifndef _WIN32
+static const std::string tmpfs_location = "/dev/shm";
+static const std::string tmpfs_ram_temp_file = "/dev/shm/gc_mem.tmp";
+
 // do not make this "static"
 #ifdef MAEMO
 std::string ram_temp_file = "/home/user/gc_mem.tmp";
@@ -136,24 +135,37 @@ void MemArena::GrabLowMemSpace(size_t size)
 	// Use ashmem so we don't have to allocate a file on disk!
 	fd = ashmem_create_region("PPSSPP_RAM", size);
 	// Note that it appears that ashmem is pinned by default, so no need to pin.
-	if (fd < 0)
-	{
+	if (fd < 0) {
 		ERROR_LOG(MEMMAP, "Failed to grab ashmem space of size: %08x  errno: %d", (int)size, (int)(errno));
 		return;
 	}
 #else
 	mode_t mode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
-	fd = open(ram_temp_file.c_str(), O_RDWR | O_CREAT, mode);
-	if (fd < 0)
-	{
+
+	// Some platforms (like Raspberry Pi) end up flushing to disk.
+	// To avoid this, we try to use /dev/shm (tmpfs) if it exists.
+	fd = -1;
+	if (File::Exists(tmpfs_location)) {
+		fd = open(tmpfs_ram_temp_file.c_str(), O_RDWR | O_CREAT, mode);
+		if (fd >= 0) {
+			// Great, this definitely shouldn't flush to disk.
+			ram_temp_file = tmpfs_ram_temp_file;
+		}
+	}
+
+	if (fd < 0) {
+		fd = open(ram_temp_file.c_str(), O_RDWR | O_CREAT, mode);
+	}
+	if (fd < 0) {
 		ERROR_LOG(MEMMAP, "Failed to grab memory space as a file: %s of size: %08x  errno: %d", ram_temp_file.c_str(), (int)size, (int)(errno));
 		return;
 	}
 	// delete immediately, we keep the fd so it still lives
-	unlink(ram_temp_file.c_str());
-	if (ftruncate(fd, size) != 0)
-	{
-		ERROR_LOG(MEMMAP, "Failed to ftruncate %d to size %08x", (int)fd, (int)size);
+	if (unlink(ram_temp_file.c_str()) != 0) {
+		WARN_LOG(MEMMAP, "Failed to unlink %s", ram_temp_file.c_str());
+	}
+	if (ftruncate(fd, size) != 0) {
+		ERROR_LOG(MEMMAP, "Failed to ftruncate %d (%s) to size %08x", (int)fd, ram_temp_file.c_str(), (int)size);
 	}
 	return;
 #endif
@@ -220,8 +232,10 @@ u8* MemArena::Find4GBBase()
 #ifdef _M_X64
 #ifdef _WIN32
 	// 64 bit
-	u8* base = (u8*)VirtualAlloc(0, 0xE1000000, MEM_RESERVE, PAGE_READWRITE);
-	VirtualFree(base, 0, MEM_RELEASE);
+	u8 *base = (u8*)VirtualAlloc(0, 0xE1000000, MEM_RESERVE, PAGE_READWRITE);
+	if (base) {
+		VirtualFree(base, 0, MEM_RELEASE);
+	}
 	return base;
 #else
 	// Very precarious - mmap cannot return an error when trying to map already used pages.

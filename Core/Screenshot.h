@@ -17,17 +17,24 @@
 
 #pragma once
 
+struct GPUDebugBuffer;
+
 enum ScreenshotFormat {
 	SCREENSHOT_PNG,
 	SCREENSHOT_JPG,
 };
 
 enum ScreenshotType {
-	// What's begin show on screen (e.g. including FPS, etc.)
+	// What's being show on screen (e.g. including FPS, etc.)
+	SCREENSHOT_OUTPUT,
+	// What the game rendered (e.g. at render resolution) to the display.
+	// Can only be used while in game.
 	SCREENSHOT_DISPLAY,
-	// What the game rendered (e.g. at render resolution.)
+	// What the game is in-progress rendering now.
 	// Can only be used while in game.
 	SCREENSHOT_RENDER,
 };
 
-bool TakeGameScreenshot(const char *filename, ScreenshotFormat fmt, ScreenshotType type);
+const u8 *ConvertBufferTo888RGB(const GPUDebugBuffer &buf, u8 *&temp, u32 &w, u32 &h);
+
+bool TakeGameScreenshot(const char *filename, ScreenshotFormat fmt, ScreenshotType type, int *width = nullptr, int *height = nullptr, int maxRes = -1);

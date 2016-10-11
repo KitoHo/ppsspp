@@ -29,7 +29,7 @@
 #include "Core/System.h"
 #include "Core/Config.h"
 #include "Core/Reporting.h"
-#include "GPU/GLES/GLES_GPU.h"
+#include "GPU/GLES/GPU_GLES.h"
 #include "GPU/GLES/GLStateCache.h"
 #include "GPU/GLES/ShaderManager.h"
 #include "GPU/GLES/TextureCache.h"
@@ -77,7 +77,7 @@ static const GLushort cullingMode[] = {
 	GL_BACK,
 };
 
-static const GLushort ztests[] = {
+static const GLushort compareOps[] = {
 	GL_NEVER, GL_ALWAYS, GL_EQUAL, GL_NOTEQUAL, 
 	GL_LESS, GL_LEQUAL, GL_GREATER, GL_GEQUAL,
 };
@@ -114,7 +114,7 @@ static const GLushort logicOps[] = {
 };
 #endif
 
-bool TransformDrawEngine::ApplyShaderBlending() {
+bool DrawEngineGLES::ApplyShaderBlending() {
 	if (gstate_c.featureFlags & GPU_SUPPORTS_ANY_FRAMEBUFFER_FETCH) {
 		return true;
 	}
@@ -142,7 +142,7 @@ bool TransformDrawEngine::ApplyShaderBlending() {
 	return true;
 }
 
-inline void TransformDrawEngine::ResetShaderBlending() {
+inline void DrawEngineGLES::ResetShaderBlending() {
 	if (fboTexBound_) {
 		glActiveTexture(GL_TEXTURE1);
 		glBindTexture(GL_TEXTURE_2D, 0);
@@ -151,8 +151,8 @@ inline void TransformDrawEngine::ResetShaderBlending() {
 	}
 }
 
-void TransformDrawEngine::ApplyDrawState(int prim) {
-	// TODO: All this setup is soon so expensive that we'll need dirty flags, or simply do it in the command writes where we detect dirty by xoring. Silly to do all this work on every drawcall.
+void DrawEngineGLES::ApplyDrawState(int prim) {
+	// TODO: All this setup is so expensive that we'll need dirty flags, or simply do it in the command writes where we detect dirty by xoring. Silly to do all this work on every drawcall.
 
 	if (gstate_c.textureChanged != TEXCHANGE_UNCHANGED && !gstate.isModeClear() && gstate.isTextureMapEnabled()) {
 		textureCache_->SetTexture();
@@ -289,17 +289,10 @@ void TransformDrawEngine::ApplyDrawState(int prim) {
 		// Depth Test
 		if (gstate.isDepthTestEnabled()) {
 			glstate.depthTest.enable();
-			glstate.depthFunc.set(ztests[gstate.getDepthTestFunction()]);
+			glstate.depthFunc.set(compareOps[gstate.getDepthTestFunction()]);
 			glstate.depthWrite.set(gstate.isDepthWriteEnabled() || alwaysDepthWrite ? GL_TRUE : GL_FALSE);
 			if (gstate.isDepthWriteEnabled() || alwaysDepthWrite) {
 				framebufferManager_->SetDepthUpdated();
-			}
-
-			if (gstate.isModeThrough()) {
-				GEComparison ztest = gstate.getDepthTestFunction();
-				if (ztest == GE_COMP_EQUAL || ztest == GE_COMP_NOTEQUAL || ztest == GE_COMP_LEQUAL || ztest == GE_COMP_GEQUAL) {
-					DEBUG_LOG_REPORT_ONCE(ztestequal, G3D, "Depth test requiring depth equality in throughmode: %d", ztest);
-				}
 			}
 		} else {
 			glstate.depthTest.disable();
@@ -312,8 +305,8 @@ void TransformDrawEngine::ApplyDrawState(int prim) {
 		bool bmask = ((gstate.pmskc >> 16) & 0xFF) < 128;
 		bool amask = (gstate.pmska & 0xFF) < 128;
 
-		u8 abits = (gstate.pmska >> 0) & 0xFF;
 #ifndef MOBILE_DEVICE
+		u8 abits = (gstate.pmska >> 0) & 0xFF;
 		u8 rbits = (gstate.pmskc >> 0) & 0xFF;
 		u8 gbits = (gstate.pmskc >> 8) & 0xFF;
 		u8 bbits = (gstate.pmskc >> 16) & 0xFF;
@@ -338,21 +331,15 @@ void TransformDrawEngine::ApplyDrawState(int prim) {
 
 		glstate.colorMask.set(rmask, gmask, bmask, amask);
 
-		// Stencil Test
-		if (gstate.isStencilTestEnabled() && enableStencilTest) {
-			glstate.stencilTest.enable();
-			glstate.stencilFunc.set(ztests[gstate.getStencilTestFunction()],
-				gstate.getStencilTestRef(),
-				gstate.getStencilTestMask());
-			glstate.stencilOp.set(stencilOps[gstate.getStencilOpSFail()],  // stencil fail
-				stencilOps[gstate.getStencilOpZFail()],  // depth fail
-				stencilOps[gstate.getStencilOpZPass()]); // depth pass
+		GenericStencilFuncState stencilState;
+		ConvertStencilFuncState(stencilState);
 
-			if (gstate.FrameBufFormat() == GE_FORMAT_5551) {
-				glstate.stencilMask.set(abits <= 0x7f ? 0xff : 0x00);
-			} else {
-				glstate.stencilMask.set(~abits);
-			}
+		// Stencil Test
+		if (stencilState.enabled) {
+			glstate.stencilTest.enable();
+			glstate.stencilFunc.set(compareOps[stencilState.testFunc], stencilState.testRef, stencilState.testMask);
+			glstate.stencilOp.set(stencilOps[stencilState.sFail], stencilOps[stencilState.zFail], stencilOps[stencilState.zPass]);
+			glstate.stencilMask.set(stencilState.writeMask);
 		} else {
 			glstate.stencilTest.disable();
 		}
@@ -377,16 +364,15 @@ void TransformDrawEngine::ApplyDrawState(int prim) {
 	if (vpAndScissor.dirtyProj) {
 		shaderManager_->DirtyUniform(DIRTY_PROJMATRIX);
 	}
+	if (vpAndScissor.dirtyDepth) {
+		shaderManager_->DirtyUniform(DIRTY_DEPTHRANGE);
+	}
 }
 
-void TransformDrawEngine::ApplyDrawStateLate() {
+void DrawEngineGLES::ApplyDrawStateLate() {
 	// At this point, we know if the vertices are full alpha or not.
 	// TODO: Set the nearest/linear here (since we correctly know if alpha/color tests are needed)?
 	if (!gstate.isModeClear()) {
-		if (gstate.isAlphaTestEnabled() || gstate.isColorTestEnabled()) {
-			fragmentTestCache_->BindTestTexture(GL_TEXTURE2);
-		}
-
 		if (fboTexNeedBind_) {
 			// Note that this is positions, not UVs, that we need the copy from.
 			framebufferManager_->BindFramebufferColor(GL_TEXTURE1, gstate.getFrameBufRawAddress(), nullptr, BINDFBCOLOR_MAY_COPY);
@@ -404,5 +390,10 @@ void TransformDrawEngine::ApplyDrawStateLate() {
 		// Apply the texture after the FBO tex, since it might unbind the texture.
 		// TODO: Could use a separate texture unit to be safer?
 		textureCache_->ApplyTexture();
+
+		// Apply last, once we know the alpha params of the texture.
+		if (gstate.isAlphaTestEnabled() || gstate.isColorTestEnabled()) {
+			fragmentTestCache_->BindTestTexture(GL_TEXTURE2);
+		}
 	}
 }

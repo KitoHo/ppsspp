@@ -34,6 +34,8 @@ public:
 
 	virtual void update(InputState &input);
 
+	virtual std::string tag() const { return "game"; }
+
 protected:
 	virtual void CreateViews();
 	void CallbackDeleteConfig(bool yes);
@@ -42,6 +44,8 @@ protected:
 	bool isRecentGame(const std::string &gamePath);
 
 private:
+	UI::Choice *AddOtherChoice(UI::Choice *choice);
+
 	// Event handlers
 	UI::EventReturn OnPlay(UI::EventParams &e);
 	UI::EventReturn OnGameSettings(UI::EventParams &e);
@@ -53,6 +57,7 @@ private:
 	UI::EventReturn OnShowInFolder(UI::EventParams &e);
 	UI::EventReturn OnCreateConfig(UI::EventParams &e);
 	UI::EventReturn OnDeleteConfig(UI::EventParams &e);
+	UI::EventReturn OnCwCheat(UI::EventParams &e);
 
 	// As we load metadata in the background, we need to be able to update these after the fact.
 	UI::Thin3DTextureView *texvGameIcon_;
@@ -61,4 +66,10 @@ private:
 	UI::TextView *tvSaveDataSize_;
 	UI::TextView *tvInstallDataSize_;
 	UI::TextView *tvRegion_;
+
+	UI::Choice *btnGameSettings_;
+	UI::Choice *btnCreateGameConfig_;
+	UI::Choice *btnDeleteGameConfig_;
+	UI::Choice *btnDeleteSaveData_;
+	std::vector<UI::Choice *> otherChoices_;
 };

@@ -228,16 +228,18 @@ void GLSLProgram::GLLost() {
 	// glDeleteShader(this->vsh_);
 	// glDeleteShader(this->fsh_);
 	// glDeleteProgram(this->program_);
+	program_ = 0;
+	vsh_ = 0;
+	fsh_ = 0;
+}
+
+void GLSLProgram::GLRestore() {
 	ILOG("Restoring GLSL program %s/%s",
 		strlen(this->vshader_filename) > 0 ? this->vshader_filename : "(mem)",
 		strlen(this->fshader_filename) > 0 ? this->fshader_filename : "(mem)");
-	this->program_ = 0;
-	this->vsh_ = 0;
-	this->fsh_ = 0;
 	glsl_recompile(this);
-	// Note that uniforms are still lost, hopefully the client sets them every frame at a minimum...
+	// Note that any shader uniforms are still lost, hopefully the client sets them every frame at a minimum...
 }
-
 
 int glsl_attrib_loc(const GLSLProgram *program, const char *name) {
 	return glGetAttribLocation(program->program_, name);

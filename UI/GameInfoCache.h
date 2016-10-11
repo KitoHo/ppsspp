@@ -22,12 +22,12 @@
 
 #include "base/mutex.h"
 #include "file/file_util.h"
-#include "thread/prioritizedworkqueue.h"
 #include "Core/ELF/ParamSFO.h"
 #include "Core/Loaders.h"
 
 class Thin3DContext;
 class Thin3DTexture;
+class PrioritizedWorkQueue;
 
 // A GameInfo holds information about a game, and also lets you do things that the VSH
 // does on the PSP, namely checking for and deleting savedata, and similar things.
@@ -98,7 +98,7 @@ public:
 		: disc_total(0), disc_number(0), region(-1), fileType(FILETYPE_UNKNOWN), paramSFOLoaded(false),
 			hasConfig(false), iconTexture(nullptr), pic0Texture(nullptr), pic1Texture(nullptr), wantFlags(0),
 		  lastAccessedTime(0.0), timeIconWasLoaded(0.0), timePic0WasLoaded(0.0), timePic1WasLoaded(0.0),
-		  gameSize(0), saveDataSize(0), installDataSize(0), pending(true), fileLoader(nullptr) {}
+		  gameSize(0), saveDataSize(0), installDataSize(0), pending(true), working(false), fileLoader(nullptr) {}
 	~GameInfo();
 
 	bool Delete();  // Better be sure what you're doing when calling this.
@@ -116,6 +116,11 @@ public:
 
 	std::vector<std::string> GetSaveDataDirectories();
 
+	std::string GetTitle();
+	void SetTitle(const std::string &newTitle);
+
+	bool IsPending();
+	bool IsWorking();
 
 	// Hold this when reading or writing from the GameInfo.
 	// Don't need to hold it when just passing around the pointer,
@@ -123,8 +128,6 @@ public:
 	// to it.
 	recursive_mutex lock;
 
-	std::string path;
-	std::string title;  // for easy access, also available in paramSFO.
 	std::string id;
 	std::string id_version;
 	int disc_total;
@@ -164,20 +167,22 @@ public:
 	u64 saveDataSize;
 	u64 installDataSize;
 	bool pending;
+	bool working;
 
 protected:
+	// Note: this can change while loading, use GetTitle().
+	std::string title;
+
 	FileLoader *fileLoader;
 	std::string filePath_;
 };
 
 class GameInfoCache {
 public:
-	GameInfoCache() : gameInfoWQ_(0) {}
+	GameInfoCache();
 	~GameInfoCache();
 
 	// This creates a background worker thread!
-	void Init();
-	void Shutdown();
 	void Clear();
 	void PurgeType(IdentifiedFileType fileType);
 
@@ -190,12 +195,11 @@ public:
 
 	PrioritizedWorkQueue *WorkQueue() { return gameInfoWQ_; }
 
-	void WaitUntilDone(GameInfo *info) {
-		// Hack - should really wait specifically for that item.
-		gameInfoWQ_->WaitUntilDone();
-	}
+	void WaitUntilDone(GameInfo *info);
 
 private:
+	void Init();
+	void Shutdown();
 	void SetupTexture(GameInfo *info, std::string &textureData, Thin3DContext *thin3d, Thin3DTexture *&tex, double &loadTime);
 
 	// Maps ISO path to info.
@@ -206,4 +210,4 @@ private:
 };
 
 // This one can be global, no good reason not to.
-extern GameInfoCache g_gameInfoCache;
+extern GameInfoCache *g_gameInfoCache;

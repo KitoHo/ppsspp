@@ -16,6 +16,7 @@
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
 #include <algorithm>
+#include <cstddef>
 #include <set>
 #include <string.h>
 #include "file/file_util.h"
@@ -33,11 +34,20 @@ static const u32 CACHE_SPACE_FLEX = 4;
 std::string DiskCachingFileLoaderCache::cacheDir_;
 
 std::map<std::string, DiskCachingFileLoaderCache *> DiskCachingFileLoader::caches_;
+recursive_mutex DiskCachingFileLoader::cachesMutex_;
 
 // Takes ownership of backend.
 DiskCachingFileLoader::DiskCachingFileLoader(FileLoader *backend)
-	: filesize_(0), filepos_(0), backend_(backend), cache_(nullptr) {
-	filesize_ = backend->FileSize();
+	: prepared_(false), filesize_(0), filepos_(0), backend_(backend), cache_(nullptr) {
+}
+
+void DiskCachingFileLoader::Prepare() {
+	if (prepared_) {
+		return;
+	}
+	prepared_ = true;
+
+	filesize_ = backend_->FileSize();
 	if (filesize_ > 0) {
 		InitCache();
 	}
@@ -52,14 +62,22 @@ DiskCachingFileLoader::~DiskCachingFileLoader() {
 }
 
 bool DiskCachingFileLoader::Exists() {
+	Prepare();
 	return backend_->Exists();
 }
 
+bool DiskCachingFileLoader::ExistsFast() {
+	// It may require a slow operation to check - if we have data, let's say yes.
+	// This helps initial load, since we check each recent file for existence.
+	return true;
+}
+
 bool DiskCachingFileLoader::IsDirectory() {
-	return backend_->IsDirectory() ? 1 : 0;
+	return backend_->IsDirectory();
 }
 
 s64 DiskCachingFileLoader::FileSize() {
+	Prepare();
 	return filesize_;
 }
 
@@ -71,19 +89,31 @@ void DiskCachingFileLoader::Seek(s64 absolutePos) {
 	filepos_ = absolutePos;
 }
 
-size_t DiskCachingFileLoader::ReadAt(s64 absolutePos, size_t bytes, void *data) {
+size_t DiskCachingFileLoader::ReadAt(s64 absolutePos, size_t bytes, void *data, Flags flags) {
+	Prepare();
 	size_t readSize;
 
-	if (cache_ && cache_->IsValid()) {
+	if (absolutePos >= filesize_) {
+		bytes = 0;
+	} else if (absolutePos + (s64)bytes >= filesize_) {
+		bytes = filesize_ - absolutePos;
+	}
+
+	if (cache_ && cache_->IsValid() && (flags & Flags::HINT_UNCACHED) == 0) {
 		readSize = cache_->ReadFromCache(absolutePos, bytes, data);
 		// While in case the cache size is too small for the entire read.
 		while (readSize < bytes) {
-			readSize += cache_->SaveIntoCache(backend_, absolutePos + readSize, bytes - readSize, (u8 *)data + readSize);
+			readSize += cache_->SaveIntoCache(backend_, absolutePos + readSize, bytes - readSize, (u8 *)data + readSize, flags);
 			// If there are already-cached blocks afterward, we have to read them.
-			readSize += cache_->ReadFromCache(absolutePos + readSize, bytes - readSize, (u8 *)data + readSize);
+			size_t bytesFromCache = cache_->ReadFromCache(absolutePos + readSize, bytes - readSize, (u8 *)data + readSize);
+			readSize += bytesFromCache;
+			if (bytesFromCache == 0) {
+				// We can't read any more.
+				break;
+			}
 		}
 	} else {
-		readSize = backend_->ReadAt(absolutePos, bytes, data);
+		readSize = backend_->ReadAt(absolutePos, bytes, data, flags);
 	}
 
 	filepos_ = absolutePos + readSize;
@@ -91,6 +121,8 @@ size_t DiskCachingFileLoader::ReadAt(s64 absolutePos, size_t bytes, void *data) 
 }
 
 std::vector<std::string> DiskCachingFileLoader::GetCachedPathsInUse() {
+	lock_guard guard(cachesMutex_);
+
 	// This is on the file loader so that it can manage the caches_.
 	std::vector<std::string> files;
 
@@ -102,6 +134,8 @@ std::vector<std::string> DiskCachingFileLoader::GetCachedPathsInUse() {
 }
 
 void DiskCachingFileLoader::InitCache() {
+	lock_guard guard(cachesMutex_);
+
 	std::string path = backend_->Path();
 	auto &entry = caches_[path];
 	if (!entry) {
@@ -113,6 +147,8 @@ void DiskCachingFileLoader::InitCache() {
 }
 
 void DiskCachingFileLoader::ShutdownCache() {
+	lock_guard guard(cachesMutex_);
+
 	if (cache_->Release()) {
 		// If it ran out of counts, delete it.
 		delete cache_;
@@ -122,7 +158,7 @@ void DiskCachingFileLoader::ShutdownCache() {
 }
 
 DiskCachingFileLoaderCache::DiskCachingFileLoaderCache(const std::string &path, u64 filesize)
-	: refCount_(0), filesize_(filesize), f_(nullptr), fd_(0) {
+	: refCount_(0), filesize_(filesize), origPath_(path), f_(nullptr), fd_(0) {
 	InitCache(path);
 }
 
@@ -135,26 +171,49 @@ void DiskCachingFileLoaderCache::InitCache(const std::string &path) {
 	indexCount_ = 0;
 	oldestGeneration_ = 0;
 	maxBlocks_ = MAX_BLOCKS_LOWER_BOUND;
+	flags_ = 0;
 	generation_ = 0;
 
 	const std::string cacheFilePath = MakeCacheFilePath(path);
-	if (!LoadCacheFile(cacheFilePath)) {
+	bool fileLoaded = LoadCacheFile(cacheFilePath);
+
+	// We do some basic locking to protect against two things: crashes and concurrency.
+	// Concurrency will break the file.  Crashes will probably leave it inconsistent.
+	if (fileLoaded && !LockCacheFile(true)) {
+		if (RemoveCacheFile(cacheFilePath)) {
+			// Create a new one.
+			fileLoaded = false;
+		} else {
+			// Couldn't remove, in use?  Give up on caching.
+			CloseFileHandle();
+		}
+	}
+	if (!fileLoaded) {
 		CreateCacheFile(cacheFilePath);
+
+		if (!LockCacheFile(true)) {
+			CloseFileHandle();
+		}
 	}
 }
 
 void DiskCachingFileLoaderCache::ShutdownCache() {
 	if (f_) {
+		bool failed = false;
 		if (fseek(f_, sizeof(FileHeader), SEEK_SET) != 0) {
-			ERROR_LOG(LOADER, "Unable to flush disk cache.");
+			failed = true;
+		} else if (fwrite(&index_[0], sizeof(BlockInfo), indexCount_, f_) != indexCount_) {
+			failed = true;
+		} else if (fflush(f_) != 0) {
+			failed = true;
 		}
-		if (fwrite(&index_[0], sizeof(BlockInfo), indexCount_, f_) != indexCount_) {
+		if (failed) {
+			// Leave it locked, it's broken.
 			ERROR_LOG(LOADER, "Unable to flush disk cache.");
+		} else {
+			LockCacheFile(false);
 		}
-
-		fclose(f_);
-		f_ = nullptr;
-		fd_ = 0;
+		CloseFileHandle();
 	}
 
 	index_.clear();
@@ -197,12 +256,12 @@ size_t DiskCachingFileLoaderCache::ReadFromCache(s64 pos, size_t bytes, void *da
 	return readSize;
 }
 
-size_t DiskCachingFileLoaderCache::SaveIntoCache(FileLoader *backend, s64 pos, size_t bytes, void *data) {
+size_t DiskCachingFileLoaderCache::SaveIntoCache(FileLoader *backend, s64 pos, size_t bytes, void *data, FileLoader::Flags flags) {
 	lock_guard guard(lock_);
 
 	if (!f_) {
 		// Just to keep things working.
-		return backend->ReadAt(pos, bytes, data);
+		return backend->ReadAt(pos, bytes, data, flags);
 	}
 
 	s64 cacheStartPos = pos / blockSize_;
@@ -231,7 +290,7 @@ size_t DiskCachingFileLoaderCache::SaveIntoCache(FileLoader *backend, s64 pos, s
 		auto &info = index_[cacheStartPos];
 
 		u8 *buf = new u8[blockSize_];
-		size_t readBytes = backend->ReadAt(cacheStartPos * (u64)blockSize_, blockSize_, buf);
+		size_t readBytes = backend->ReadAt(cacheStartPos * (u64)blockSize_, blockSize_, buf, flags);
 
 		// Check if it was written while we were busy.  Might happen if we thread.
 		if (info.block == INVALID_BLOCK && readBytes != 0) {
@@ -247,7 +306,7 @@ size_t DiskCachingFileLoaderCache::SaveIntoCache(FileLoader *backend, s64 pos, s
 		delete [] buf;
 	} else {
 		u8 *wholeRead = new u8[blocksToRead * blockSize_];
-		size_t readBytes = backend->ReadAt(cacheStartPos * (u64)blockSize_, blocksToRead * blockSize_, wholeRead);
+		size_t readBytes = backend->ReadAt(cacheStartPos * (u64)blockSize_, blocksToRead * blockSize_, wholeRead, flags);
 
 		for (size_t i = 0; i < blocksToRead; ++i) {
 			auto &info = index_[cacheStartPos + i];
@@ -391,6 +450,10 @@ bool DiskCachingFileLoaderCache::ReadBlockData(u8 *dest, BlockInfo &info, size_t
 	}
 	s64 blockOffset = GetBlockOffset(info.block);
 
+	// Before we read, make sure the buffers are flushed.
+	// We might be trying to read an area we've recently written.
+	fflush(f_);
+
 	bool failed = false;
 #ifdef ANDROID
 	if (lseek64(fd_, blockOffset, SEEK_SET) != blockOffset) {
@@ -408,9 +471,7 @@ bool DiskCachingFileLoaderCache::ReadBlockData(u8 *dest, BlockInfo &info, size_t
 
 	if (failed) {
 		ERROR_LOG(LOADER, "Unable to read disk cache data entry.");
-		fclose(f_);
-		f_ = nullptr;
-		fd_ = 0;
+		CloseFileHandle();
 	}
 	return !failed;
 }
@@ -438,9 +499,7 @@ void DiskCachingFileLoaderCache::WriteBlockData(BlockInfo &info, u8 *src) {
 
 	if (failed) {
 		ERROR_LOG(LOADER, "Unable to write disk cache data entry.");
-		fclose(f_);
-		f_ = nullptr;
-		fd_ = 0;
+		CloseFileHandle();
 	}
 }
 
@@ -460,9 +519,7 @@ void DiskCachingFileLoaderCache::WriteIndexData(u32 indexPos, BlockInfo &info) {
 
 	if (failed) {
 		ERROR_LOG(LOADER, "Unable to write disk cache index entry.");
-		fclose(f_);
-		f_ = nullptr;
-		fd_ = 0;
+		CloseFileHandle();
 	}
 }
 
@@ -499,6 +556,7 @@ bool DiskCachingFileLoaderCache::LoadCacheFile(const std::string &path) {
 		// Now let's load the index.
 		blockSize_ = header.blockSize;
 		maxBlocks_ = header.maxBlocks;
+		flags_ = header.flags;
 		LoadCacheIndex();
 	} else {
 		ERROR_LOG(LOADER, "Disk cache file header did not match, recreating cache file");
@@ -510,9 +568,7 @@ bool DiskCachingFileLoaderCache::LoadCacheFile(const std::string &path) {
 
 void DiskCachingFileLoaderCache::LoadCacheIndex() {
 	if (fseek(f_, sizeof(FileHeader), SEEK_SET) != 0) {
-		fclose(f_);
-		f_ = nullptr;
-		fd_ = 0;
+		CloseFileHandle();
 		return;
 	}
 
@@ -522,9 +578,7 @@ void DiskCachingFileLoaderCache::LoadCacheIndex() {
 	memset(&blockIndexLookup_[0], INVALID_INDEX, maxBlocks_ * sizeof(blockIndexLookup_[0]));
 
 	if (fread(&index_[0], sizeof(BlockInfo), indexCount_, f_) != indexCount_) {
-		fclose(f_);
-		f_ = nullptr;
-		fd_ = 0;
+		CloseFileHandle();
 		return;
 	}
 
@@ -565,6 +619,7 @@ void DiskCachingFileLoaderCache::CreateCacheFile(const std::string &path) {
 		ERROR_LOG(LOADER, "Not enough free space; disabling disk cache");
 		return;
 	}
+	flags_ = 0;
 
 	f_ = File::OpenCFile(path, "wb+");
 	if (!f_) {
@@ -584,25 +639,113 @@ void DiskCachingFileLoaderCache::CreateCacheFile(const std::string &path) {
 	header.blockSize = blockSize_;
 	header.filesize = filesize_;
 	header.maxBlocks = maxBlocks_;
+	header.flags = flags_;
 
 	if (fwrite(&header, sizeof(header), 1, f_) != 1) {
-		fclose(f_);
-		f_ = nullptr;
-		fd_ = 0;
+		CloseFileHandle();
 		return;
 	}
 
 	indexCount_ = (filesize_ + blockSize_ - 1) / blockSize_;
+	index_.clear();
 	index_.resize(indexCount_);
 	blockIndexLookup_.resize(maxBlocks_);
 	memset(&blockIndexLookup_[0], INVALID_INDEX, maxBlocks_ * sizeof(blockIndexLookup_[0]));
 
 	if (fwrite(&index_[0], sizeof(BlockInfo), indexCount_, f_) != indexCount_) {
-		fclose(f_);
-		f_ = nullptr;
-		fd_ = 0;
+		CloseFileHandle();
 		return;
 	}
+	if (fflush(f_) != 0) {
+		CloseFileHandle();
+		return;
+	}
+
+	INFO_LOG(LOADER, "Created new disk cache file for %s", origPath_.c_str());
+}
+
+bool DiskCachingFileLoaderCache::LockCacheFile(bool lockStatus) {
+	if (!f_) {
+		return false;
+	}
+
+	u32 offset = (u32)offsetof(FileHeader, flags);
+
+	bool failed = false;
+	if (fseek(f_, offset, SEEK_SET) != 0) {
+		failed = true;
+	} else if (fread(&flags_, sizeof(u32), 1, f_) != 1) {
+		failed = true;
+	}
+
+	if (failed) {
+		ERROR_LOG(LOADER, "Unable to read current flags during disk cache locking");
+		CloseFileHandle();
+		return false;
+	}
+
+	// TODO: Also use flock where supported?
+	if (lockStatus) {
+		if ((flags_ & FLAG_LOCKED) != 0) {
+			ERROR_LOG(LOADER, "Could not lock disk cache file for %s", origPath_.c_str());
+			return false;
+		}
+		flags_ |= FLAG_LOCKED;
+	} else {
+		if ((flags_ & FLAG_LOCKED) == 0) {
+			ERROR_LOG(LOADER, "Could not unlock disk cache file for %s", origPath_.c_str());
+			return false;
+		}
+		flags_ &= ~FLAG_LOCKED;
+	}
+
+	if (fseek(f_, offset, SEEK_SET) != 0) {
+		failed = true;
+	} else if (fwrite(&flags_, sizeof(u32), 1, f_) != 1) {
+		failed = true;
+	} else if (fflush(f_) != 0) {
+		failed = true;
+	}
+
+	if (failed) {
+		ERROR_LOG(LOADER, "Unable to write updated flags during disk cache locking");
+		CloseFileHandle();
+		return false;
+	}
+
+	if (lockStatus) {
+		INFO_LOG(LOADER, "Locked disk cache file for %s", origPath_.c_str());
+	} else {
+		INFO_LOG(LOADER, "Unlocked disk cache file for %s", origPath_.c_str());
+	}
+	return true;
+}
+
+bool DiskCachingFileLoaderCache::RemoveCacheFile(const std::string &path) {
+	// Note that some platforms, you can't delete open files.  So we check.
+	CloseFileHandle();
+	return File::Delete(path);
+}
+
+void DiskCachingFileLoaderCache::CloseFileHandle() {
+	if (f_) {
+		fclose(f_);
+	}
+	f_ = nullptr;
+	fd_ = 0;
+}
+
+bool DiskCachingFileLoaderCache::HasData() const {
+	if (!f_) {
+		return false;
+	}
+
+	for (size_t i = 0; i < blockIndexLookup_.size(); ++i) {
+		if (blockIndexLookup_[i] != INVALID_INDEX) {
+			return true;
+		}
+	}
+	return false;
 }
 
 u64 DiskCachingFileLoaderCache::FreeDiskSpace() {

@@ -22,13 +22,13 @@
 #include "Common/Common.h"
 #include "Core/Config.h"
 #include "Core/CoreParameter.h"
+#include "Core/Host.h"
 #include "Core/Reporting.h"
 #include "Core/ELF/ParamSFO.h"
 #include "Core/System.h"
 #include "GPU/Common/FramebufferCommon.h"
 #include "GPU/GPUInterface.h"
 #include "GPU/GPUState.h"
-#include "UI/OnScreenDisplay.h"  // Gross dependency!
 
 void CenterDisplayOutputRect(float *x, float *y, float *w, float *h, float origW, float origH, float frameW, float frameH, int rotation) {
 	float outW;
@@ -36,69 +36,61 @@ void CenterDisplayOutputRect(float *x, float *y, float *w, float *h, float origW
 
 	bool rotated = rotation == ROTATION_LOCKED_VERTICAL || rotation == ROTATION_LOCKED_VERTICAL180;
 
-	if (g_Config.bStretchToDisplay) {
+	if (g_Config.iSmallDisplayZoomType == 0) { // Stretching
 		outW = frameW;
 		outH = frameH;
 	} else {
-		bool fullScreenZoom = true;
-#ifndef MOBILE_DEVICE
-		// This would turn off small display in window mode. I think it's better to allow it.
-		// fullScreenZoom = g_Config.bFullScreen;
-#endif
-		if (fullScreenZoom) {
-			if (g_Config.iSmallDisplayZoom != 0) {
-				float offsetX = (g_Config.fSmallDisplayOffsetX - 0.5f) * 2.0f * frameW;
-				float offsetY = (g_Config.fSmallDisplayOffsetY - 0.5f) * 2.0f * frameH;
-				// Have to invert Y for GL
-#if defined(USING_WIN_UI)
-				if (g_Config.iGPUBackend == GPU_BACKEND_OPENGL) { offsetY = offsetY * -1.0f; }
-#else
+		if (g_Config.iSmallDisplayZoomType == 3) { // Manual Scaling
+			float offsetX = (g_Config.fSmallDisplayOffsetX - 0.5f) * 2.0f * frameW;
+			float offsetY = (g_Config.fSmallDisplayOffsetY - 0.5f) * 2.0f * frameH;
+			// Have to invert Y for GL
+			if (GetGPUBackend() == GPUBackend::OPENGL) {
 				offsetY = offsetY * -1.0f;
-#endif
-				float customZoom = g_Config.fSmallDisplayCustomZoom / 8.0f;
-				float smallDisplayW = origW * customZoom;
-				float smallDisplayH = origH * customZoom;
-				if (!rotated) {
-					*x = floorf(((frameW - smallDisplayW) / 2.0f) + offsetX);
-					*y = floorf(((frameH - smallDisplayH) / 2.0f) + offsetY);
-					*w = floorf(smallDisplayW);
-					*h = floorf(smallDisplayH);
-					return;
-				} else {
-					*x = floorf(((frameW - smallDisplayH) / 2.0f) + offsetX);
-					*y = floorf(((frameH - smallDisplayW) / 2.0f) + offsetY);
-					*w = floorf(smallDisplayH);
-					*h = floorf(smallDisplayW);
-					return;
-				}
+			}
+			float customZoom = g_Config.fSmallDisplayZoomLevel;
+			float smallDisplayW = origW * customZoom;
+			float smallDisplayH = origH * customZoom;
+			if (!rotated) {
+				*x = floorf(((frameW - smallDisplayW) / 2.0f) + offsetX);
+				*y = floorf(((frameH - smallDisplayH) / 2.0f) + offsetY);
+				*w = floorf(smallDisplayW);
+				*h = floorf(smallDisplayH);
+				return;
 			} else {
-				float pixelCrop = frameH / 270.0f;
-				float resCommonWidescreen = pixelCrop - floor(pixelCrop);
-				if (!rotated && resCommonWidescreen == 0.0f) {
-					*x = 0;
-					*y = floorf(-pixelCrop);
-					*w = floorf(frameW);
-					*h = floorf(pixelCrop * 272.0f);
-					return;
-				}
+				*x = floorf(((frameW - smallDisplayH) / 2.0f) + offsetX);
+				*y = floorf(((frameH - smallDisplayW) / 2.0f) + offsetY);
+				*w = floorf(smallDisplayH);
+				*h = floorf(smallDisplayW);
+				return;
+			}
+		} else if (g_Config.iSmallDisplayZoomType == 2) { // Auto Scaling
+			float pixelCrop = frameH / 270.0f;
+			float resCommonWidescreen = pixelCrop - floor(pixelCrop);
+			if (!rotated && resCommonWidescreen == 0.0f) {
+				*x = 0;
+				*y = floorf(-pixelCrop);
+				*w = floorf(frameW);
+				*h = floorf(pixelCrop * 272.0f);
+				return;
 			}
 		}
 
-
 		float origRatio = !rotated ? origW / origH : origH / origW;
 		float frameRatio = frameW / frameH;
-
+		
 		if (origRatio > frameRatio) {
 			// Image is wider than frame. Center vertically.
 			outW = frameW;
 			outH = frameW / origRatio;
 			// Stretch a little bit
-			if (!rotated && g_Config.bPartialStretch)
+			if (!rotated && g_Config.iSmallDisplayZoomType == 1) // Partial Stretch
 				outH = (frameH + outH) / 2.0f; // (408 + 720) / 2 = 564
 		} else {
 			// Image is taller than frame. Center horizontally.
 			outW = frameH * origRatio;
 			outH = frameH;
+			if (rotated && g_Config.iSmallDisplayZoomType == 1) // Partial Stretch
+				outW = (frameH + outH) / 2.0f; // (408 + 720) / 2 = 564
 		}
 	}
 
@@ -113,14 +105,18 @@ FramebufferManagerCommon::FramebufferManagerCommon() :
 	displayFramebufPtr_(0),
 	displayStride_(0),
 	displayFormat_(GE_FORMAT_565),
-	displayFramebuf_(0),
-	prevDisplayFramebuf_(0),
-	prevPrevDisplayFramebuf_(0),
+	displayFramebuf_(nullptr),
+	prevDisplayFramebuf_(nullptr),
+	prevPrevDisplayFramebuf_(nullptr),
 	frameLastFramebufUsed_(0),
-	currentRenderVfb_(0),
+	currentRenderVfb_(nullptr),
 	framebufRangeEnd_(0),
+	updateVRAM_(false),
+	usePostShader_(false),
+	postShaderAtOutputResolution_(false),
+	postShaderIsUpscalingFilter_(false),
 	hackForce04154000Download_(false),
-	updateVRAM_(false) {
+	gameUsesSequentialCopies_(false) {
 	UpdateSize();
 }
 
@@ -133,6 +129,8 @@ void FramebufferManagerCommon::Init() {
 	// The game draws solid colors to a small framebuffer, and then reads this directly in VRAM.
 	// We force this framebuffer to 1x and force download it automatically.
 	hackForce04154000Download_ = gameId == "NPJH50631" || gameId == "NPJH50372" || gameId == "NPJH90164" || gameId == "NPJH50515";
+	// Let's also apply to Me & My Katamari.
+	hackForce04154000Download_ = hackForce04154000Download_ || gameId == "ULUS10094" || gameId == "ULES00339" || gameId == "ULJS00033" || gameId == "UCKS45022" || gameId == "ULJS19009" || gameId == "NPJH50141";
 
 	// And an initial clear. We don't clear per frame as the games are supposed to handle that
 	// by themselves.
@@ -162,21 +160,18 @@ void FramebufferManagerCommon::SetDisplayFramebuffer(u32 framebuf, u32 stride, G
 }
 
 VirtualFramebuffer *FramebufferManagerCommon::GetVFBAt(u32 addr) {
-	VirtualFramebuffer *match = NULL;
+	VirtualFramebuffer *match = nullptr;
 	for (size_t i = 0; i < vfbs_.size(); ++i) {
 		VirtualFramebuffer *v = vfbs_[i];
 		if (MaskedEqual(v->fb_address, addr)) {
 			// Could check w too but whatever
-			if (match == NULL || match->last_frame_render < v->last_frame_render) {
+			if (match == nullptr || match->last_frame_render < v->last_frame_render) {
 				match = v;
 			}
 		}
 	}
-	if (match != NULL) {
-		return match;
-	}
 
-	return 0;
+	return match;
 }
 
 bool FramebufferManagerCommon::MaskedEqual(u32 addr1, u32 addr2) {
@@ -317,6 +312,8 @@ VirtualFramebuffer *FramebufferManagerCommon::DoSetRenderFrameBuffer(const Frame
 				vfb->fb_stride = params.fb_stride;
 				vfb->format = params.fmt;
 			}
+			// Keep track, but this isn't really used.
+			vfb->z_stride = params.z_stride;
 			// Heuristic: In throughmode, a higher height could be used.  Let's avoid shrinking the buffer.
 			if (params.isModeThrough && (int)vfb->width < params.fb_stride) {
 				vfb->width = std::max((int)vfb->width, drawing_width);
@@ -360,6 +357,9 @@ VirtualFramebuffer *FramebufferManagerCommon::DoSetRenderFrameBuffer(const Frame
 				needsRecreate = needsRecreate || vfb->newHeight > vfb->bufferHeight || vfb->newHeight * 2 < vfb->bufferHeight;
 				if (needsRecreate) {
 					ResizeFramebufFBO(vfb, vfb->width, vfb->height, true);
+					// Let's discard this information, might be wrong now.
+					vfb->safeWidth = 0;
+					vfb->safeHeight = 0;
 				} else {
 					// Even though we won't resize it, let's at least change the size params.
 					vfb->width = drawing_width;
@@ -383,7 +383,8 @@ VirtualFramebuffer *FramebufferManagerCommon::DoSetRenderFrameBuffer(const Frame
 	// None found? Create one.
 	if (!vfb) {
 		vfb = new VirtualFramebuffer();
-		vfb->fbo = 0;
+		memset(vfb, 0, sizeof(VirtualFramebuffer));
+		vfb->fbo = nullptr;
 		vfb->fb_address = params.fb_address;
 		vfb->fb_stride = params.fb_stride;
 		vfb->z_address = params.z_address;
@@ -398,8 +399,6 @@ VirtualFramebuffer *FramebufferManagerCommon::DoSetRenderFrameBuffer(const Frame
 		vfb->bufferWidth = drawing_width;
 		vfb->bufferHeight = drawing_height;
 		vfb->format = params.fmt;
-		vfb->drawnWidth = 0;
-		vfb->drawnHeight = 0;
 		vfb->drawnFormat = params.fmt;
 		vfb->usageFlags = FB_USAGE_RENDERTARGET;
 		SetColorUpdated(vfb, skipDrawReason);
@@ -417,10 +416,6 @@ VirtualFramebuffer *FramebufferManagerCommon::DoSetRenderFrameBuffer(const Frame
 		INFO_LOG(SCEGE, "Creating FBO for %08x : %i x %i x %i", vfb->fb_address, vfb->width, vfb->height, vfb->format);
 
 		vfb->last_frame_render = gpuStats.numFlips;
-		vfb->last_frame_used = 0;
-		vfb->last_frame_attached = 0;
-		vfb->last_frame_displayed = 0;
-		vfb->last_frame_clut = 0;
 		frameLastFramebufUsed_ = gpuStats.numFlips;
 		vfbs_.push_back(vfb);
 		currentRenderVfb_ = vfb;
@@ -488,6 +483,33 @@ VirtualFramebuffer *FramebufferManagerCommon::DoSetRenderFrameBuffer(const Frame
 	return vfb;
 }
 
+void FramebufferManagerCommon::NotifyVideoUpload(u32 addr, int size, int width, GEBufferFormat fmt) {
+	// Note: UpdateFromMemory() is still called later.
+	// This is a special case where we have extra information prior to the invalidation.
+
+	// TODO: Could possibly be an offset...
+	VirtualFramebuffer *vfb = GetVFBAt(addr);
+	if (vfb) {
+		if (vfb->format != fmt || vfb->drawnFormat != fmt) {
+			DEBUG_LOG(ME, "Changing format for %08x from %d to %d", addr, vfb->drawnFormat, fmt);
+			vfb->format = fmt;
+			vfb->drawnFormat = fmt;
+
+			// Let's count this as a "render".  This will also force us to use the correct format.
+			vfb->last_frame_render = gpuStats.numFlips;
+		}
+
+		if (vfb->fb_stride < width) {
+			DEBUG_LOG(ME, "Changing stride for %08x from %d to %d", addr, vfb->fb_stride, width);
+			const int bpp = fmt == GE_FORMAT_8888 ? 4 : 2;
+			ResizeFramebufFBO(vfb, width, size / (bpp * width));
+			vfb->fb_stride = width;
+			// This might be a bit wider than necessary, but we'll redetect on next render.
+			vfb->width = width;
+		}
+	}
+}
+
 void FramebufferManagerCommon::UpdateFromMemory(u32 addr, int size, bool safe) {
 	addr &= ~0x40000000;
 	// TODO: Could go through all FBOs, but probably not important?
@@ -521,6 +543,20 @@ void FramebufferManagerCommon::UpdateFromMemory(u32 addr, int size, bool safe) {
 		}
 
 		RebindFramebuffer();
+	}
+}
+
+void FramebufferManagerCommon::DownloadFramebufferOnSwitch(VirtualFramebuffer *vfb) {
+	if (vfb && vfb->safeWidth > 0 && vfb->safeHeight > 0 && !vfb->firstFrameSaved) {
+		// Some games will draw to some memory once, and use it as a render-to-texture later.
+		// To support this, we save the first frame to memory when we have a save w/h.
+		// Saving each frame would be slow.
+		if (!g_Config.bDisableSlowFramebufEffects) {
+			ReadFramebufferToMemory(vfb, true, 0, 0, vfb->safeWidth, vfb->safeHeight);
+			vfb->firstFrameSaved = true;
+			vfb->safeWidth = 0;
+			vfb->safeHeight = 0;
+		}
 	}
 }
 
@@ -727,6 +763,92 @@ void FramebufferManagerCommon::FindTransferFramebuffers(VirtualFramebuffer *&dst
 	}
 }
 
+VirtualFramebuffer *FramebufferManagerCommon::FindDownloadTempBuffer(VirtualFramebuffer *vfb) {
+	// For now we'll keep these on the same struct as the ones that can get displayed
+	// (and blatantly copy work already done above while at it).
+	VirtualFramebuffer *nvfb = 0;
+
+	// We maintain a separate vector of framebuffer objects for blitting.
+	for (size_t i = 0; i < bvfbs_.size(); ++i) {
+		VirtualFramebuffer *v = bvfbs_[i];
+		if (v->fb_address == vfb->fb_address && v->format == vfb->format) {
+			if (v->bufferWidth == vfb->bufferWidth && v->bufferHeight == vfb->bufferHeight) {
+				nvfb = v;
+				v->fb_stride = vfb->fb_stride;
+				v->width = vfb->width;
+				v->height = vfb->height;
+				break;
+			}
+		}
+	}
+
+	// Create a new fbo if none was found for the size
+	if (!nvfb) {
+		nvfb = new VirtualFramebuffer();
+		memset(nvfb, 0, sizeof(VirtualFramebuffer));
+		nvfb->fbo = nullptr;
+		nvfb->fb_address = vfb->fb_address;
+		nvfb->fb_stride = vfb->fb_stride;
+		nvfb->z_address = vfb->z_address;
+		nvfb->z_stride = vfb->z_stride;
+		nvfb->width = vfb->width;
+		nvfb->height = vfb->height;
+		nvfb->renderWidth = vfb->bufferWidth;
+		nvfb->renderHeight = vfb->bufferHeight;
+		nvfb->bufferWidth = vfb->bufferWidth;
+		nvfb->bufferHeight = vfb->bufferHeight;
+		nvfb->format = vfb->format;
+		nvfb->drawnWidth = vfb->drawnWidth;
+		nvfb->drawnHeight = vfb->drawnHeight;
+		nvfb->drawnFormat = vfb->format;
+		nvfb->colorDepth = vfb->colorDepth;
+
+		if (!CreateDownloadTempBuffer(nvfb)) {
+			delete nvfb;
+			return nullptr;
+		}
+
+		bvfbs_.push_back(nvfb);
+	} else {
+		UpdateDownloadTempBuffer(nvfb);
+	}
+
+	nvfb->usageFlags |= FB_USAGE_RENDERTARGET;
+	nvfb->last_frame_render = gpuStats.numFlips;
+	nvfb->dirtyAfterDisplay = true;
+
+	return nvfb;
+}
+
+void FramebufferManagerCommon::OptimizeDownloadRange(VirtualFramebuffer * vfb, int & x, int & y, int & w, int & h) {
+	if (gameUsesSequentialCopies_) {
+		// Ignore the x/y/etc., read the entire thing.
+		x = 0;
+		y = 0;
+		w = vfb->width;
+		h = vfb->height;
+	}
+	if (x == 0 && y == 0 && w == vfb->width && h == vfb->height) {
+		// Mark it as fully downloaded until next render to it.
+		vfb->memoryUpdated = true;
+	} else {
+		// Let's try to set the flag eventually, if the game copies a lot.
+		// Some games copy subranges very frequently.
+		const static int FREQUENT_SEQUENTIAL_COPIES = 3;
+		static int frameLastCopy = 0;
+		static u32 bufferLastCopy = 0;
+		static int copiesThisFrame = 0;
+		if (frameLastCopy != gpuStats.numFlips || bufferLastCopy != vfb->fb_address) {
+			frameLastCopy = gpuStats.numFlips;
+			bufferLastCopy = vfb->fb_address;
+			copiesThisFrame = 0;
+		}
+		if (++copiesThisFrame > FREQUENT_SEQUENTIAL_COPIES) {
+			gameUsesSequentialCopies_ = true;
+		}
+	}
+}
+
 bool FramebufferManagerCommon::NotifyBlockTransferBefore(u32 dstBasePtr, int dstStride, int dstX, int dstY, u32 srcBasePtr, int srcStride, int srcX, int srcY, int width, int height, int bpp, u32 skipDrawReason) {
 	if (!useBufferedRendering_ || updateVRAM_) {
 		return false;
@@ -833,6 +955,11 @@ void FramebufferManagerCommon::NotifyBlockTransferAfter(u32 dstBasePtr, int dstS
 				const u8 *srcBase = Memory::GetPointerUnchecked(srcBasePtr) + (srcX + srcY * srcStride) * bpp;
 				int dstBpp = dstBuffer->format == GE_FORMAT_8888 ? 4 : 2;
 				float dstXFactor = (float)bpp / dstBpp;
+				if (dstWidth > dstBuffer->width || dstHeight > dstBuffer->height) {
+					// The buffer isn't big enough, and we have a clear hint of size.  Resize.
+					// This happens in Valkyrie Profile when uploading video at the ending.
+					ResizeFramebufFBO(dstBuffer, dstWidth, dstHeight, false, true);
+				}
 				DrawPixels(dstBuffer, static_cast<int>(dstX * dstXFactor), dstY, srcBase, dstBuffer->format, static_cast<int>(srcStride * dstXFactor), static_cast<int>(dstWidth * dstXFactor), dstHeight);
 				SetColorUpdated(dstBuffer, skipDrawReason);
 				RebindFramebuffer();
@@ -857,13 +984,24 @@ void FramebufferManagerCommon::SetRenderSize(VirtualFramebuffer *vfb) {
 		break;
 	}
 
+	if (hackForce04154000Download_ && vfb->fb_address == 0x00154000) {
+		force1x = true;
+	}
+
 	if (force1x && g_Config.iInternalResolution != 1) {
 		vfb->renderWidth = vfb->bufferWidth;
 		vfb->renderHeight = vfb->bufferHeight;
-	}
-	else {
+	} else {
 		vfb->renderWidth = (u16)(vfb->bufferWidth * renderWidthFactor);
 		vfb->renderHeight = (u16)(vfb->bufferHeight * renderHeightFactor);
+	}
+}
+
+void FramebufferManagerCommon::SetSafeSize(u16 w, u16 h) {
+	VirtualFramebuffer *vfb = currentRenderVfb_;
+	if (vfb) {
+		vfb->safeWidth = std::max(vfb->safeWidth, w);
+		vfb->safeHeight = std::max(vfb->safeHeight, h);
 	}
 }
 
@@ -889,8 +1027,11 @@ void FramebufferManagerCommon::ShowScreenResolution() {
 	std::ostringstream messageStream;
 	messageStream << gr->T("Internal Resolution") << ": ";
 	messageStream << PSP_CoreParameter().renderWidth << "x" << PSP_CoreParameter().renderHeight << " ";
+	if (postShaderIsUpscalingFilter_) {
+		messageStream << gr->T("(upscaling)") << " ";
+	}
 	messageStream << gr->T("Window Size") << ": ";
 	messageStream << PSP_CoreParameter().pixelWidth << "x" << PSP_CoreParameter().pixelHeight;
 
-	osm.Show(messageStream.str(), 2.0f, 0xFFFFFF, -1, true, "resize");
+	host->NotifyUserMessage(messageStream.str(), 2.0f, 0xFFFFFF, "resize");
 }

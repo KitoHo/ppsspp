@@ -16,8 +16,10 @@
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
 #include "i18n/i18n.h"
+#include "gfx_es2/draw_buffer.h"
 #include "ui/view.h"
 #include "ui/viewgroup.h"
+#include "ui/ui_context.h"
 #include "ui/ui_screen.h"
 #include "thin3d/thin3d.h"
 
@@ -38,10 +40,8 @@
 #include "UI/ReportScreen.h"
 #include "UI/CwCheatScreen.h"
 #include "UI/MainScreen.h"
+#include "UI/OnScreenDisplay.h"
 #include "UI/GameInfoCache.h"
-
-#include "gfx_es2/draw_buffer.h"
-#include "ui/ui_context.h"
 
 void AsyncImageFileView::GetContentDimensions(const UIContext &dc, float &w, float &h) const {
 	if (texture_) {
@@ -80,6 +80,8 @@ void AsyncImageFileView::Draw(UIContext &dc) {
 		texture_ = dc.GetThin3DContext()->CreateTextureFromFile(filename_.c_str(), DETECT);
 		if (!texture_)
 			textureFailed_ = true;
+		else if (textureAutoGen_)
+			texture_->AutoGenMipmaps();
 	}
 
 	if (HasFocus()) {
@@ -177,11 +179,11 @@ private:
 	std::string screenshotFilename_;
 };
 
-SaveSlotView::SaveSlotView(const std::string &gameFilename, int slot, UI::LayoutParams *layoutParams) : UI::LinearLayout(UI::ORIENT_HORIZONTAL, layoutParams), gamePath_(gameFilename), slot_(slot) {
+SaveSlotView::SaveSlotView(const std::string &gameFilename, int slot, UI::LayoutParams *layoutParams) : UI::LinearLayout(UI::ORIENT_HORIZONTAL, layoutParams), slot_(slot), gamePath_(gameFilename) {
 	using namespace UI;
 
-	screenshotFilename_ = SaveState::GenerateSaveSlotFilename(gamePath_, slot, "jpg");
-	PrioritizedWorkQueue *wq = g_gameInfoCache.WorkQueue();
+	screenshotFilename_ = SaveState::GenerateSaveSlotFilename(gamePath_, slot, SaveState::SCREENSHOT_EXTENSION);
+	PrioritizedWorkQueue *wq = g_gameInfoCache->WorkQueue();
 	Add(new Spacer(5));
 
 	AsyncImageFileView *fv = Add(new AsyncImageFileView(screenshotFilename_, IS_DEFAULT, wq, new UI::LayoutParams(82 * 2, 47 * 2)));
@@ -225,9 +227,15 @@ void SaveSlotView::Draw(UIContext &dc) {
 	UI::LinearLayout::Draw(dc);
 }
 
+static void AfterSaveStateAction(bool status, const std::string &message, void *) {
+	if (!message.empty()) {
+		osm.Show(message, 2.0);
+	}
+}
+
 UI::EventReturn SaveSlotView::OnLoadState(UI::EventParams &e) {
 	g_Config.iCurrentStateSlot = slot_;
-	SaveState::LoadSlot(gamePath_, slot_, SaveState::Callback(), 0);
+	SaveState::LoadSlot(gamePath_, slot_, &AfterSaveStateAction);
 	UI::EventParams e2;
 	e2.v = this;
 	OnStateLoaded.Trigger(e2);
@@ -236,7 +244,7 @@ UI::EventReturn SaveSlotView::OnLoadState(UI::EventParams &e) {
 
 UI::EventReturn SaveSlotView::OnSaveState(UI::EventParams &e) {
 	g_Config.iCurrentStateSlot = slot_;
-	SaveState::SaveSlot(gamePath_, slot_, SaveState::Callback(), 0);
+	SaveState::SaveSlot(gamePath_, slot_, &AfterSaveStateAction);
 	UI::EventParams e2;
 	e2.v = this;
 	OnStateSaved.Trigger(e2);
@@ -325,7 +333,7 @@ void GamePauseScreen::CreateViews() {
 
 	// TODO, also might be nice to show overall compat rating here?
 	// Based on their platform or even cpu/gpu/config.  Would add an API for it.
-	if (Reporting::IsEnabled()) {
+	if (Reporting::IsSupported() && gameId.size() && gameId != "_") {
 		I18NCategory *rp = GetI18NCategory("Reporting");
 		rightColumnItems->Add(new Choice(rp->T("ReportButton", "Report Feedback")))->OnClick.Handle(this, &GamePauseScreen::OnReportFeedback);
 	}
@@ -359,6 +367,9 @@ void GamePauseScreen::dialogFinished(const Screen *dialog, DialogResult dr) {
 		SaveState::LoadSlot(gamePath_, slot, SaveState::Callback(), 0);
 
 		finishNextFrame_ = true;
+	} else {
+		// There may have been changes to our savestates, so let's recreate.
+		RecreateViews();
 	}
 }
 
@@ -387,14 +398,14 @@ UI::EventReturn GamePauseScreen::OnReportFeedback(UI::EventParams &e) {
 }
 
 UI::EventReturn GamePauseScreen::OnRewind(UI::EventParams &e) {
-	SaveState::Rewind(SaveState::Callback(), 0);
+	SaveState::Rewind(&AfterSaveStateAction);
 
 	screenManager()->finishDialog(this, DR_CANCEL);
 	return UI::EVENT_DONE;
 }
 
 UI::EventReturn GamePauseScreen::OnCwCheat(UI::EventParams &e) {
-	screenManager()->push(new CwCheatScreen());
+	screenManager()->push(new CwCheatScreen(gamePath_));
 	return UI::EVENT_DONE;
 }
 
@@ -406,7 +417,7 @@ UI::EventReturn GamePauseScreen::OnSwitchUMD(UI::EventParams &e) {
 void GamePauseScreen::CallbackDeleteConfig(bool yes)
 {
 	if (yes) {
-		GameInfo *info = g_gameInfoCache.GetInfo(NULL, gamePath_, 0);
+		GameInfo *info = g_gameInfoCache->GetInfo(NULL, gamePath_, 0);
 		g_Config.unloadGameConfig();
 		g_Config.deleteGameConfig(info->id);
 		info->hasConfig = false;
@@ -420,7 +431,7 @@ UI::EventReturn GamePauseScreen::OnCreateConfig(UI::EventParams &e)
 	g_Config.createGameConfig(gameId);
 	g_Config.changeGameSpecific(gameId);
 	g_Config.saveGameConfig(gameId);
-	GameInfo *info = g_gameInfoCache.GetInfo(NULL, gamePath_, 0);
+	GameInfo *info = g_gameInfoCache->GetInfo(NULL, gamePath_, 0);
 	if (info) {
 		info->hasConfig = true;
 	}
@@ -441,6 +452,7 @@ UI::EventReturn GamePauseScreen::OnDeleteConfig(UI::EventParams &e)
 
 
 void GamePauseScreen::sendMessage(const char *message, const char *value) {
+	UIDialogScreenWithGameBackground::sendMessage(message, value);
 	// Since the language message isn't allowed to be in native, we have to have add this
 	// to every screen which directly inherits from UIScreen(which are few right now, luckily).
 	if (!strcmp(message, "language")) {

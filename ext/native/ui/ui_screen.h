@@ -1,5 +1,7 @@
 #pragma once
 
+#include <set>
+
 #include "ui/screen.h"
 #include "ui/viewgroup.h"
 
@@ -63,6 +65,7 @@ public:
 
 protected:
 	virtual bool FillVertical() const { return false; }
+	virtual UI::Size PopupWidth() const { return 550; }
 	virtual bool ShowButtons() const { return true; }
 	virtual void OnCompleted(DialogResult result) {}
 
@@ -93,8 +96,12 @@ public:
 	std::string GetChoiceString() const {
 		return adaptor_.GetTitle(listView_->GetSelected());
 	}
-	UI::Event OnChoice;
+	void SetHiddenChoices(std::set<int> hidden) {
+		hidden_ = hidden;
+	}
 	virtual std::string tag() const override { return std::string("listpopup"); }
+
+	UI::Event OnChoice;
 
 protected:
 	virtual bool FillVertical() const override { return false; }
@@ -108,6 +115,7 @@ private:
 
 	std::function<void(int)> callback_;
 	bool showButtons_;
+	std::set<int> hidden_;
 };
 
 class MessagePopupScreen : public PopupScreen {
@@ -134,7 +142,7 @@ namespace UI {
 class SliderPopupScreen : public PopupScreen {
 public:
 	SliderPopupScreen(int *value, int minValue, int maxValue, const std::string &title, int step = 1, const std::string &units = "")
-	: PopupScreen(title, "OK", "Cancel"), value_(value), minValue_(minValue), maxValue_(maxValue), step_(step), units_(units) {}
+	: PopupScreen(title, "OK", "Cancel"), units_(units), value_(value), minValue_(minValue), maxValue_(maxValue), step_(step), changing_(false) {}
 	virtual void CreatePopupContents(ViewGroup *parent) override;
 
 	Event OnChange;
@@ -159,7 +167,7 @@ private:
 class SliderFloatPopupScreen : public PopupScreen {
 public:
 	SliderFloatPopupScreen(float *value, float minValue, float maxValue, const std::string &title, float step = 1.0f, const std::string &units = "")
-	: PopupScreen(title, "OK", "Cancel"), value_(value), minValue_(minValue), maxValue_(maxValue), step_(step), units_(units) {}
+	: PopupScreen(title, "OK", "Cancel"), units_(units), value_(value), minValue_(minValue), maxValue_(maxValue), step_(step), changing_(false) {}
 	void CreatePopupContents(UI::ViewGroup *parent) override;
 
 	Event OnChange;
@@ -195,7 +203,6 @@ private:
 	std::string *value_;
 	std::string textEditValue_;
 	std::string placeholder_;
-	int step_;
 	int maxLen_;
 };
 
@@ -215,6 +222,10 @@ public:
 	virtual void Draw(UIContext &dc) override;
 	virtual void Update(const InputState &input_state) override;
 
+	void HideChoice(int c) {
+		hidden_.insert(c);
+	}
+
 	UI::Event OnChoice;
 
 private:
@@ -231,6 +242,7 @@ private:
 	ScreenManager *screenManager_;
 	std::string valueText_;
 	bool restoreFocus_;
+	std::set<int> hidden_;
 };
 
 
@@ -240,6 +252,13 @@ public:
 	PopupSliderChoice(int *value, int minValue, int maxValue, const std::string &text, int step, ScreenManager *screenManager, const std::string &units = "", LayoutParams *layoutParams = 0);
 
 	virtual void Draw(UIContext &dc) override;
+
+	void SetFormat(const char *fmt) {
+		fmt_ = fmt;
+	}
+	void SetZeroLabel(const std::string &str) {
+		zeroLabel_ = str;
+	}
 
 	Event OnChange;
 
@@ -251,6 +270,8 @@ private:
 	int minValue_;
 	int maxValue_;
 	int step_;
+	const char *fmt_;
+	std::string zeroLabel_;
 	std::string units_;
 	ScreenManager *screenManager_;
 	bool restoreFocus_;
@@ -263,6 +284,13 @@ public:
 
 	virtual void Draw(UIContext &dc) override;
 
+	void SetFormat(const char *fmt) {
+		fmt_ = fmt;
+	}
+	void SetZeroLabel(const std::string &str) {
+		zeroLabel_ = str;
+	}
+
 	Event OnChange;
 
 private:
@@ -272,6 +300,8 @@ private:
 	float minValue_;
 	float maxValue_;
 	float step_;
+	const char *fmt_;
+	std::string zeroLabel_;
 	std::string units_;
 	ScreenManager *screenManager_;
 	bool restoreFocus_;

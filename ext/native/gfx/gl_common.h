@@ -53,12 +53,13 @@ typedef void (EGLAPIENTRYP PFNGLDRAWTEXTURENVPROC) (GLuint texture, GLuint sampl
 extern PFNGLDRAWTEXTURENVPROC glDrawTextureNV;
 #ifndef ARM64
 typedef void (EGLAPIENTRYP PFNGLBLITFRAMEBUFFERNVPROC) (
-	GLint srcX0, GLint srcY0, GLint srcX1, GLuint srcY1,
-	GLint dstX0, GLint dstY0, GLint dstX1, GLuint dstY1,
-	GLint mask, GLenum filter);
+	GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1,
+	GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1,
+	GLbitfield mask, GLenum filter);
 #endif
 extern PFNGLBLITFRAMEBUFFERNVPROC glBlitFramebufferNV;
 
+#ifdef IOS
 extern PFNGLDISCARDFRAMEBUFFEREXTPROC glDiscardFramebufferEXT;
 extern PFNGLGENVERTEXARRAYSOESPROC glGenVertexArraysOES;
 extern PFNGLBINDVERTEXARRAYOESPROC glBindVertexArrayOES;
@@ -70,6 +71,7 @@ extern PFNGLISVERTEXARRAYOESPROC glIsVertexArrayOES;
 #define glBindVertexArray glBindVertexArrayOES
 #define glDeleteVertexArrays glDeleteVertexArraysOES
 #define glIsVertexArray glIsVertexArrayOES
+#endif
 
 #endif
 

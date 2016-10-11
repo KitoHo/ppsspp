@@ -1,6 +1,7 @@
 #pragma once
 
 #include <vector>
+#include <set>
 
 #include "base/logging.h"
 #include "base/mutex.h"
@@ -64,6 +65,7 @@ public:
 	virtual void SetBG(const Drawable &bg) { bg_ = bg; }
 
 	virtual void Clear();
+	void PersistData(PersistStatus status, std::string anonId, PersistMap &storage) override;
 	View *GetViewByIndex(int index) { return views_[index]; }
 	int GetNumSubviews() const { return (int)views_.size(); }
 	void SetHasDropShadow(bool has) { hasDropShadow_ = has; }
@@ -111,14 +113,24 @@ public:
 	// Set to NONE to not attach this edge to the container.
 	float left, top, right, bottom;
 	bool center;  // If set, only two "sides" can be set, and they refer to the center, not the edge, of the view being layouted.
+
+	static LayoutParamsType StaticType() {
+		return LP_ANCHOR;
+	}
 };
 
 class AnchorLayout : public ViewGroup {
 public:
-	AnchorLayout(LayoutParams *layoutParams = 0) : ViewGroup(layoutParams) {}
+	AnchorLayout(LayoutParams *layoutParams = 0) : ViewGroup(layoutParams), overflow_(true) {}
 	void Measure(const UIContext &dc, MeasureSpec horiz, MeasureSpec vert) override;
 	void Layout() override;
+	void Overflow(bool allow) {
+		overflow_ = allow;
+	}
 	std::string Describe() const override { return "AnchorLayout: " + View::Describe(); }
+
+private:
+	bool overflow_;
 };
 
 class LinearLayoutParams : public LayoutParams {
@@ -145,6 +157,10 @@ public:
 	Margins margins;
 
 	bool HasMargins() const { return hasMargins_; }
+
+	static LayoutParamsType StaticType() {
+		return LP_LINEAR;
+	}
 
 private:
 	bool hasMargins_;
@@ -211,9 +227,10 @@ public:
 		scrollStart_(0),
 		scrollTarget_(0),
 		scrollToTarget_(false),
-		inertia_(0),
+		inertia_(0.0f),
+		pull_(0.0f),
 		lastViewSize_(0.0f),
-		scrollToTopOnSizeChange_(true) {}
+		scrollToTopOnSizeChange_(false) {}
 
 	void Measure(const UIContext &dc, MeasureSpec horiz, MeasureSpec vert) override;
 	void Layout() override;
@@ -230,13 +247,15 @@ public:
 	void Update(const InputState &input_state) override;
 
 	// Override so that we can scroll to the active one after moving the focus.
-	virtual bool SubviewFocused(View *view) override;
+	bool SubviewFocused(View *view) override;
+	void PersistData(PersistStatus status, std::string anonId, PersistMap &storage) override;
+	void SetVisibility(Visibility visibility) override;
 
 	// Quick hack to prevent scrolling to top in some lists
 	void SetScrollToTop(bool t) { scrollToTopOnSizeChange_ = t; }
 
 private:
-	void ClampScrollPos(float &pos);
+	float ClampedScrollPos(float pos);
 
 	GestureDetector gesture_;
 	Orientation orientation_;
@@ -245,6 +264,7 @@ private:
 	float scrollTarget_;
 	bool scrollToTarget_;
 	float inertia_;
+	float pull_;
 	float lastViewSize_;
 	bool scrollToTopOnSizeChange_;
 };
@@ -276,6 +296,7 @@ public:
 	Event OnChoice;
 
 private:
+	StickyChoice *Choice(int index);
 	EventReturn OnChoiceClick(EventParams &e);
 
 	int selected_;
@@ -299,14 +320,18 @@ public:
 	}
 
 	void SetCurrentTab(int tab) {
-		tabs_[currentTab_]->SetVisibility(V_GONE);
-		currentTab_ = tab;
-		tabs_[currentTab_]->SetVisibility(V_VISIBLE);
+		if (tab != currentTab_) {
+			tabs_[currentTab_]->SetVisibility(V_GONE);
+			currentTab_ = tab;
+			tabs_[currentTab_]->SetVisibility(V_VISIBLE);
+		}
 		tabStrip_->SetSelection(tab);
 	}
 
 	int GetCurrentTab() const { return currentTab_; }
 	std::string Describe() const override { return "TabHolder: " + View::Describe(); }
+
+	void PersistData(PersistStatus status, std::string anonId, PersistMap &storage) override;
 
 private:
 	EventReturn OnTabClick(EventParams &e);
@@ -365,7 +390,7 @@ private:
 // In the future, it might be smart and load/unload items as they go, but currently not.
 class ListView : public ScrollView {
 public:
-	ListView(ListAdaptor *a, LayoutParams *layoutParams = 0);
+	ListView(ListAdaptor *a, std::set<int> hidden = std::set<int>(), LayoutParams *layoutParams = 0);
 
 	int GetSelected() { return adaptor_->GetSelected(); }
 	virtual void Measure(const UIContext &dc, MeasureSpec horiz, MeasureSpec vert) override;
@@ -379,6 +404,7 @@ private:
 	ListAdaptor *adaptor_;
 	LinearLayout *linLayout_;
 	float maxHeight_;
+	std::set<int> hidden_;
 };
 
 void LayoutViewHierarchy(const UIContext &dc, ViewGroup *root);

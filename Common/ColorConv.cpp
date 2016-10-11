@@ -408,7 +408,7 @@ void ConvertRGBA4444ToRGBA8888(u32 *dst32, const u16 *src, const u32 numPixels) 
 		__m128i b = _mm_and_si128(_mm_srli_epi16(c, 8), mask4);
 		// And lastly 00A0 00A0.  No mask needed, we have a wall.
 		__m128i a = _mm_srli_epi16(c, 12);
-		a = _mm_slli_epi16(g, 8);
+		a = _mm_slli_epi16(a, 8);
 
 		// We swizzle after combining - R0G0 R0G0 and B0A0 B0A0 -> RRGG RRGG and BBAA BBAA.
 		__m128i rg = _mm_or_si128(r, g);
@@ -432,6 +432,39 @@ void ConvertRGBA4444ToRGBA8888(u32 *dst32, const u16 *src, const u32 numPixels) 
 		dst[x * 4 + 1] = Convert4To8((col >> 4) & 0xf);
 		dst[x * 4 + 2] = Convert4To8((col >> 8) & 0xf);
 		dst[x * 4 + 3] = Convert4To8(col >> 12);
+	}
+}
+
+void ConvertABGR565ToRGBA8888(u32 *dst32, const u16 *src, const u32 numPixels) {
+	u8 *dst = (u8 *)dst32;
+	for (u32 x = 0; x < numPixels; x++) {
+		u16 col = src[x];
+		dst[x * 4] = Convert5To8((col >> 11) & 0x1f);
+		dst[x * 4 + 1] = Convert6To8((col >> 5) & 0x3f);
+		dst[x * 4 + 2] = Convert5To8((col) & 0x1f);
+		dst[x * 4 + 3] = 255;
+	}
+}
+
+void ConvertABGR1555ToRGBA8888(u32 *dst32, const u16 *src, const u32 numPixels) {
+	u8 *dst = (u8 *)dst32;
+	for (u32 x = 0; x < numPixels; x++) {
+		u16 col = src[x];
+		dst[x * 4] = Convert5To8((col >> 11) & 0x1f);
+		dst[x * 4 + 1] = Convert5To8((col >> 6) & 0x1f);
+		dst[x * 4 + 2] = Convert5To8((col >> 1) & 0x1f);
+		dst[x * 4 + 3] = (col & 1) ? 255 : 0;
+	}
+}
+
+void ConvertABGR4444ToRGBA8888(u32 *dst32, const u16 *src, const u32 numPixels) {
+	u8 *dst = (u8 *)dst32;
+	for (u32 x = 0; x < numPixels; x++) {
+		u16 col = src[x];
+		dst[x * 4] = Convert4To8(col >> 12);
+		dst[x * 4 + 1] = Convert4To8((col >> 8) & 0xf);
+		dst[x * 4 + 2] = Convert4To8((col >> 4) & 0xf);
+		dst[x * 4 + 3] = Convert4To8(col & 0xf);
 	}
 }
 

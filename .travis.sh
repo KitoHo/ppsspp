@@ -1,6 +1,8 @@
 #/bin/bash
 
-NDK_VER=android-ndk-r10d
+export USE_CCACHE=1
+export NDK_CCACHE=ccache
+NDK_VER=android-ndk-r12b
 
 download_extract() {
 	aria2c -x 16 $1 -o $2
@@ -8,17 +10,12 @@ download_extract() {
 }
 
 # This is used for the Android NDK.
-download_extract_xz() {
+download_extract_zip() {
 	aria2c --file-allocation=none --timeout=120 --retry-wait=5 --max-tries=20 -Z -c $1 -o $2
-	stat -c 'ATTEMPT 1 - %s' $2
-	md5sum $2
 	# This resumes the download, in case it failed.
 	aria2c --file-allocation=none --timeout=120 --retry-wait=5 --max-tries=20 -Z -c $1 -o $2
-	stat -c 'ATTEMPT 2 - %s' $2
-	md5sum $2
 
-	# Keep some output going during the extract, so the build doesn't timeout.
-	pv $2 | xz -vd | tar -x
+	unzip $2 2>&1 | pv > /dev/null
 }
 
 travis_before_install() {
@@ -32,6 +29,16 @@ travis_before_install() {
 			sudo apt-get install lib32stdc++6 lib32z1 lib32z1-dev cmake -qq
 		fi
 	fi
+}
+
+setup_ccache_script() {
+	if [ ! -e "$1" ]; then
+		mkdir "$1"
+	fi
+
+	echo "#!/bin/bash" > "$1/$3"
+	echo "ccache $2/$3 \$*" >> "$1/$3"
+	chmod +x "$1/$3"
 }
 
 travis_install() {
@@ -61,7 +68,7 @@ travis_install() {
 	if [ "$PPSSPP_BUILD_TYPE" = "Android" ]; then
 		free -m
 		sudo apt-get install ant -qq
-		download_extract_xz http://hdkr.co/${NDK_VER}-x86_64.tar.xz ${NDK_VER}-x86_64.tar.xz
+		download_extract_zip http://dl.google.com/android/repository/${NDK_VER}-linux-x86_64.zip ${NDK_VER}-linux-x86_64.zip
 	fi
 
 	# Blackberry NDK: 10.3.0.440 + GCC: 4.8.2
@@ -71,23 +78,25 @@ travis_install() {
 		sed -i 's/-g../&-4.8.2/g' Blackberry/bb.toolchain.cmake
 	fi
 
-	# Symbian NDK: Belle + GCC: 4.8.3
-	if [ "$PPSSPP_BUILD_TYPE" = "Symbian" ]; then
-		sudo apt-get install lib32stdc++6 lib32bz2-1.0 -qq
-		download_extract https://github.com/xsacha/SymbianGCC/releases/download/4.8.3/gcc4.8.3_x86-64.tar.bz2 compiler.tar.bz2
-		download_extract https://github.com/xsacha/SymbianGCC/releases/download/4.8.3/ndk-new.tar.bz2 ndk.tar.bz2
-		export EPOCROOT=$(pwd)/SDKs/SymbianSR1Qt474/ SBS_GCCE483BIN=$(pwd)/gcc4.8.3_x86-64/bin
-		cp ffmpeg/symbian/armv6/lib/* $EPOCROOT/epoc32/release/armv5/urel/
+	# Ensure we're using ccache
+	if [[ "$CXX" = "clang" && "$CC" == "clang" ]]; then
+		export CXX="ccache clang" CC="ccache clang"
+	fi
+	if [[ "$PPSSPP_BUILD_TYPE" == "Linux" && "$CXX" == "g++" ]]; then
+		# Also use gcc 4.8, instead of whatever default version.
+		export CXX="ccache g++-4.8" CC="ccache gcc-4.8"
+	fi
+	if [[ "$CXX" != *ccache* ]]; then
+		export CXX="ccache $CXX"
+	fi
+	if [[ "$CC" != *ccache* ]]; then
+		export CC="ccache $CC"
 	fi
 }
 
 travis_script() {
 	# Compile PPSSPP
 	if [ "$PPSSPP_BUILD_TYPE" = "Linux" ]; then
-		if [ "$CXX" = "g++" ]; then
-			export CXX="g++-4.8" CC="gcc-4.8"
-		fi
-
 		if [ "$QT" = "TRUE" ]; then
 			./b.sh --qt
 		else
@@ -101,18 +110,13 @@ travis_script() {
 		fi
 
 		pushd android
-		./ab.sh -j1
+		./ab.sh -j2 APP_ABI=$APP_ABI
 		popd
 	fi
 	if [ "$PPSSPP_BUILD_TYPE" = "Blackberry" ]; then
 		export QNX_TARGET="$(pwd)/target_10_3_0_440/qnx6" QNX_HOST="$(pwd)/host_10_3_0_2702/linux/x86" && PATH="$QNX_HOST/usr/bin:$PATH"
 
 		./b.sh --release --no-package
-	fi
-	if [ "$PPSSPP_BUILD_TYPE" = "Symbian" ]; then
-		export EPOCROOT=$(pwd)/SDKs/SymbianSR1Qt474/ SBS_GCCE483BIN=$(pwd)/gcc4.8.3_x86-64/bin
-		PATH=$SBS_GCCE483BIN:$(pwd)/tools/sbs/bin:$EPOCROOT/epoc32/tools:$EPOCROOT/bin:$(pwd)/tools/sbs/linux-x86_64-libc2_15/bin:$PATH
-		QMAKE_ARGS="CONFIG+=no_assets" ./b.sh --debug --no-package
 	fi
 	if [ "$PPSSPP_BUILD_TYPE" = "iOS" ]; then
 		./b.sh --ios
@@ -123,6 +127,8 @@ travis_script() {
 }
 
 travis_after_success() {
+	ccache -s
+
 	if [ "$PPSSPP_BUILD_TYPE" = "Linux" ]; then
 		./test.py
 	fi

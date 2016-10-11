@@ -28,31 +28,34 @@ class DiskCachingFileLoaderCache;
 class DiskCachingFileLoader : public FileLoader {
 public:
 	DiskCachingFileLoader(FileLoader *backend);
-	virtual ~DiskCachingFileLoader() override;
+	~DiskCachingFileLoader() override;
 
-	virtual bool Exists() override;
-	virtual bool IsDirectory() override;
-	virtual s64 FileSize() override;
-	virtual std::string Path() const override;
+	bool Exists() override;
+	bool ExistsFast() override;
+	bool IsDirectory() override;
+	s64 FileSize() override;
+	std::string Path() const override;
 
-	virtual void Seek(s64 absolutePos) override;
-	virtual size_t Read(size_t bytes, size_t count, void *data) override {
-		return ReadAt(filepos_, bytes, count, data);
+	void Seek(s64 absolutePos) override;
+	size_t Read(size_t bytes, size_t count, void *data, Flags flags = Flags::NONE) override {
+		return ReadAt(filepos_, bytes, count, data, flags);
 	}
-	virtual size_t Read(size_t bytes, void *data) override {
-		return ReadAt(filepos_, bytes, data);
+	size_t Read(size_t bytes, void *data, Flags flags = Flags::NONE) override {
+		return ReadAt(filepos_, bytes, data, flags);
 	}
-	virtual size_t ReadAt(s64 absolutePos, size_t bytes, size_t count, void *data) override {
-		return ReadAt(absolutePos, bytes * count, data) / bytes;
+	size_t ReadAt(s64 absolutePos, size_t bytes, size_t count, void *data, Flags flags = Flags::NONE) override {
+		return ReadAt(absolutePos, bytes * count, data, flags) / bytes;
 	}
-	virtual size_t ReadAt(s64 absolutePos, size_t bytes, void *data) override;
+	size_t ReadAt(s64 absolutePos, size_t bytes, void *data, Flags flags = Flags::NONE) override;
 
 	static std::vector<std::string> GetCachedPathsInUse();
 
 private:
+	void Prepare();
 	void InitCache();
 	void ShutdownCache();
 
+	bool prepared_;
 	s64 filesize_;
 	s64 filepos_;
 	FileLoader *backend_;
@@ -61,6 +64,7 @@ private:
 	// We don't support concurrent disk cache access (we use memory cached indexes.)
 	// So we have to ensure there's only one of these per.
 	static std::map<std::string, DiskCachingFileLoaderCache *> caches_;
+	static recursive_mutex cachesMutex_;
 };
 
 class DiskCachingFileLoaderCache {
@@ -86,7 +90,9 @@ public:
 
 	size_t ReadFromCache(s64 pos, size_t bytes, void *data);
 	// Guaranteed to read at least one block into the cache.
-	size_t SaveIntoCache(FileLoader *backend, s64 pos, size_t bytes, void *data);
+	size_t SaveIntoCache(FileLoader *backend, s64 pos, size_t bytes, void *data, FileLoader::Flags flags);
+
+	bool HasData() const;
 
 private:
 	void InitCache(const std::string &path);
@@ -106,6 +112,9 @@ private:
 	bool LoadCacheFile(const std::string &path);
 	void LoadCacheIndex();
 	void CreateCacheFile(const std::string &path);
+	bool LockCacheFile(bool lockStatus);
+	bool RemoveCacheFile(const std::string &path);
+	void CloseFileHandle();
 
 	u64 FreeDiskSpace();
 	u32 DetermineMaxBlocks();
@@ -118,6 +127,7 @@ private:
 	// 32 blockSize
 	// 64 filesize
 	// 32 maxBlocks
+	// 32 flags
 	// index[filesize / blockSize] <-- ~500 KB for 4GB
 	//   32 (fileoffset - headersize) / blockSize -> -1=not present
 	//   16 generation?
@@ -126,7 +136,7 @@ private:
 	//   8 * blockSize
 
 	enum {
-		CACHE_VERSION = 2,
+		CACHE_VERSION = 3,
 		DEFAULT_BLOCK_SIZE = 65536,
 		MAX_BLOCKS_PER_READ = 16,
 		MAX_BLOCKS_LOWER_BOUND = 256, // 16 MB
@@ -141,9 +151,11 @@ private:
 	u16 generation_;
 	u16 oldestGeneration_;
 	u32 maxBlocks_;
+	u32 flags_;
 	size_t cacheSize_;
 	size_t indexCount_;
 	recursive_mutex lock_;
+	std::string origPath_;
 
 	struct FileHeader {
 		char magic[8];
@@ -151,6 +163,11 @@ private:
 		u32_le blockSize;
 		s64_le filesize;
 		u32_le maxBlocks;
+		u32_le flags;
+	};
+
+	enum FileFlags {
+		FLAG_LOCKED = 1 << 0,
 	};
 
 	struct BlockInfo {

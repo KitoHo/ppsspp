@@ -45,33 +45,20 @@ BlockDevice *constructBlockDevice(FileLoader *fileLoader) {
 		return new FileBlockDevice(fileLoader);
 }
 
-RAMBlockDevice::RAMBlockDevice(BlockDevice *device) {
-	totalBlocks_ = device->GetNumBlocks();
-	u32 blockSize = GetBlockSize();
-	image_ = new u8[totalBlocks_ * blockSize];
-	for (int i = 0; i < totalBlocks_; i++) {
-		device->ReadBlock(i, image_ + i * blockSize);
+u32 BlockDevice::CalculateCRC() {
+	u32 crc = crc32(0, Z_NULL, 0);
+
+	u8 block[2048];
+	for (u32 i = 0; i < GetNumBlocks(); ++i) {
+		if (!ReadBlock(i, block, true)) {
+			ERROR_LOG(HLE, "Failed to read block for CRC");
+			return 0;
+		}
+		crc = crc32(crc, block, 2048);
 	}
-	delete device;
-}
 
-RAMBlockDevice::~RAMBlockDevice() {
-	delete[] image_;
+	return crc;
 }
-
-bool RAMBlockDevice::ReadBlock(int blockNumber, u8 *outPtr) {
-	if (blockNumber >= 0 && blockNumber < totalBlocks_) {
-		u32 blockSize = GetBlockSize();
-		memcpy(outPtr, image_ + blockSize * blockNumber, blockSize);
-		return true;
-	}
-	return false;
-}
-
-u32 RAMBlockDevice::GetNumBlocks() {
-	return totalBlocks_;
-}
-
 
 
 FileBlockDevice::FileBlockDevice(FileLoader *fileLoader)
@@ -82,8 +69,9 @@ FileBlockDevice::FileBlockDevice(FileLoader *fileLoader)
 FileBlockDevice::~FileBlockDevice() {
 }
 
-bool FileBlockDevice::ReadBlock(int blockNumber, u8 *outPtr) {
-	if (fileLoader_->ReadAt((u64)blockNumber * (u64)GetBlockSize(), 1, 2048, outPtr) != 2048) {
+bool FileBlockDevice::ReadBlock(int blockNumber, u8 *outPtr, bool uncached) {
+	FileLoader::Flags flags = uncached ? FileLoader::Flags::HINT_UNCACHED : FileLoader::Flags::NONE;
+	if (fileLoader_->ReadAt((u64)blockNumber * (u64)GetBlockSize(), 1, 2048, outPtr, flags) != 2048) {
 		DEBUG_LOG(FILESYS, "Could not read 2048 bytes from block");
 		return false;
 	}
@@ -206,8 +194,9 @@ CISOFileBlockDevice::~CISOFileBlockDevice()
 	delete [] zlibBuffer;
 }
 
-bool CISOFileBlockDevice::ReadBlock(int blockNumber, u8 *outPtr) 
+bool CISOFileBlockDevice::ReadBlock(int blockNumber, u8 *outPtr, bool uncached)
 {
+	FileLoader::Flags flags = uncached ? FileLoader::Flags::HINT_UNCACHED : FileLoader::Flags::NONE;
 	if ((u32)blockNumber >= numBlocks)
 	{
 		memset(outPtr, 0, GetBlockSize());
@@ -228,7 +217,7 @@ bool CISOFileBlockDevice::ReadBlock(int blockNumber, u8 *outPtr)
 	const int plain = idx & 0x80000000;
 	if (plain)
 	{
-		int readSize = (u32)fileLoader_->ReadAt(compressedReadPos + compressedOffset, 1, GetBlockSize(), outPtr);
+		int readSize = (u32)fileLoader_->ReadAt(compressedReadPos + compressedOffset, 1, GetBlockSize(), outPtr, flags);
 		if (readSize < GetBlockSize())
 			memset(outPtr + readSize, 0, GetBlockSize() - readSize);
 	}
@@ -239,7 +228,7 @@ bool CISOFileBlockDevice::ReadBlock(int blockNumber, u8 *outPtr)
 	}
 	else
 	{
-		const u32 readSize = (u32)fileLoader_->ReadAt(compressedReadPos, 1, compressedReadSize, readBuffer);
+		const u32 readSize = (u32)fileLoader_->ReadAt(compressedReadPos, 1, compressedReadSize, readBuffer, flags);
 
 		z.zalloc = Z_NULL;
 		z.zfree = Z_NULL;
@@ -372,9 +361,12 @@ bool CISOFileBlockDevice::ReadBlocks(u32 minBlock, int count, u8 *outPtr) {
 }
 
 
+recursive_mutex NPDRMDemoBlockDevice::mutex_;
+
 NPDRMDemoBlockDevice::NPDRMDemoBlockDevice(FileLoader *fileLoader)
 	: fileLoader_(fileLoader)
 {
+	lock_guard guard(mutex_);
 	MAC_KEY mkey;
 	CIPHER_KEY ckey;
 	u8 np_header[256];
@@ -440,6 +432,7 @@ NPDRMDemoBlockDevice::NPDRMDemoBlockDevice(FileLoader *fileLoader)
 
 NPDRMDemoBlockDevice::~NPDRMDemoBlockDevice()
 {
+	lock_guard guard(mutex_);
 	delete [] table;
 	delete [] tempBuf;
 	delete [] blockBuf;
@@ -447,8 +440,10 @@ NPDRMDemoBlockDevice::~NPDRMDemoBlockDevice()
 
 int lzrc_decompress(void *out, int out_len, void *in, int in_len);
 
-bool NPDRMDemoBlockDevice::ReadBlock(int blockNumber, u8 *outPtr)
+bool NPDRMDemoBlockDevice::ReadBlock(int blockNumber, u8 *outPtr, bool uncached)
 {
+	FileLoader::Flags flags = uncached ? FileLoader::Flags::HINT_UNCACHED : FileLoader::Flags::NONE;
+	lock_guard guard(mutex_);
 	CIPHER_KEY ckey;
 	int block, lba, lzsize;
 	size_t readSize;
@@ -476,7 +471,7 @@ bool NPDRMDemoBlockDevice::ReadBlock(int blockNumber, u8 *outPtr)
 	else
 		readBuf = blockBuf;
 
-	readSize = fileLoader_->ReadAt(psarOffset+table[block].offset, 1, table[block].size, readBuf);
+	readSize = fileLoader_->ReadAt(psarOffset+table[block].offset, 1, table[block].size, readBuf, flags);
 	if(readSize != (size_t)table[block].size){
 		if((u32)block==(numBlocks-1))
 			return true;

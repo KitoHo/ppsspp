@@ -47,6 +47,7 @@
 #include "Core/Core.h"
 #include "Core/CoreTiming.h"
 #include "Core/CoreParameter.h"
+#include "Core/FileLoaders/RamCachingFileLoader.h"
 #include "Core/FileSystems/MetaFileSystem.h"
 #include "Core/Loaders.h"
 #include "Core/PSPLoaders.h"
@@ -89,6 +90,8 @@ volatile CoreState coreState = CORE_STEPPING;
 volatile bool coreStatePending = false;
 static volatile CPUThreadState cpuThreadState = CPU_THREAD_NOT_RUNNING;
 
+static GPUBackend gpuBackend;
+
 void UpdateUIState(GlobalUIState newState) {
 	// Never leave the EXIT state.
 	if (globalUIState != newState && globalUIState != UISTATE_EXIT) {
@@ -99,6 +102,14 @@ void UpdateUIState(GlobalUIState newState) {
 
 GlobalUIState GetUIState() {
 	return globalUIState;
+}
+
+void SetGPUBackend(GPUBackend type) {
+	gpuBackend = type;
+}
+
+GPUBackend GetGPUBackend() {
+	return gpuBackend;
 }
 
 bool IsAudioInitialised() {
@@ -171,22 +182,24 @@ void CPU_Shutdown();
 void CPU_Init() {
 	coreState = CORE_POWERUP;
 	currentMIPS = &mipsr4k;
-	
+
 	g_symbolMap = new SymbolMap();
 
 	// Default memory settings
 	// Seems to be the safest place currently..
-	if (g_Config.iPSPModel == PSP_MODEL_FAT)
-		Memory::g_MemorySize = Memory::RAM_NORMAL_SIZE; // 32 MB of ram by default
-	else
-		Memory::g_MemorySize = Memory::RAM_DOUBLE_SIZE;
+	Memory::g_MemorySize = Memory::RAM_NORMAL_SIZE; // 32 MB of ram by default
 
 	g_RemasterMode = false;
 	g_DoubleTextureCoordinates = false;
 	Memory::g_PSPModel = g_Config.iPSPModel;
 
 	std::string filename = coreParameter.fileToStart;
-	loadedFile = ConstructFileLoader(filename);
+	loadedFile = ResolveFileLoaderTarget(ConstructFileLoader(filename));
+#ifdef _M_X64
+	if (g_Config.bCacheFullIsoInRam) {
+		loadedFile = new RamCachingFileLoader(loadedFile);
+	}
+#endif
 	IdentifiedFileType type = Identify_File(loadedFile);
 
 	// TODO: Put this somewhere better?
@@ -202,6 +215,13 @@ void CPU_Init() {
 	case FILETYPE_PSP_ISO_NP:
 	case FILETYPE_PSP_DISC_DIRECTORY:
 		InitMemoryForGameISO(loadedFile);
+		break;
+	case FILETYPE_PSP_PBP:
+		InitMemoryForGamePBP(loadedFile);
+		break;
+	case FILETYPE_PSP_PBP_DIRECTORY:
+		// This is normal for homebrew.
+		// ERROR_LOG(LOADER, "PBP directory resolution failed.");
 		break;
 	default:
 		break;
@@ -352,6 +372,7 @@ void System_Wake() {
 static bool pspIsInited = false;
 static bool pspIsIniting = false;
 static bool pspIsQuiting = false;
+// Ugly!
 
 bool PSP_InitStart(const CoreParameter &coreParam, std::string *error_string) {
 	if (pspIsIniting || pspIsQuiting) {
@@ -365,7 +386,12 @@ bool PSP_InitStart(const CoreParameter &coreParam, std::string *error_string) {
 #else
 	INFO_LOG(BOOT, "PPSSPP %s", PPSSPP_GIT_VERSION);
 #endif
+
+	GraphicsContext *temp = coreParameter.graphicsContext;
 	coreParameter = coreParam;
+	if (coreParameter.graphicsContext == nullptr) {
+		coreParameter.graphicsContext = temp;
+	}
 	coreParameter.errorString = "";
 	pspIsIniting = true;
 
@@ -399,7 +425,7 @@ bool PSP_InitUpdate(std::string *error_string) {
 	bool success = coreParameter.fileToStart != "";
 	*error_string = coreParameter.errorString;
 	if (success) {
-		success = GPU_Init();
+		success = GPU_Init(coreParameter.graphicsContext, coreParameter.thin3d);
 		if (!success) {
 			PSP_Shutdown();
 			*error_string = "Unable to initialize rendering engine.";
@@ -463,6 +489,19 @@ void PSP_Shutdown() {
 	pspIsIniting = false;
 	pspIsQuiting = false;
 	g_Config.unloadGameConfig();
+}
+
+void PSP_BeginHostFrame() {
+	// Reapply the graphics state of the PSP
+	if (gpu) {
+		gpu->BeginHostFrame();
+	}
+}
+
+void PSP_EndHostFrame() {
+	if (gpu) {
+		gpu->EndHostFrame();
+	}
 }
 
 void PSP_RunLoopUntil(u64 globalticks) {
@@ -547,6 +586,17 @@ std::string GetSysDirectory(PSPDirectories directoryType) {
 		return g_Config.memStickDirectory + "PSP/PPSSPP_STATE/";
 	case DIRECTORY_CACHE:
 		return g_Config.memStickDirectory + "PSP/SYSTEM/CACHE/";
+	case DIRECTORY_TEXTURES:
+		return g_Config.memStickDirectory + "PSP/TEXTURES/";
+	case DIRECTORY_APP_CACHE:
+		if (!g_Config.appCacheDirectory.empty()) {
+			return g_Config.appCacheDirectory;
+		}
+		return g_Config.memStickDirectory + "PSP/SYSTEM/CACHE/";
+	case DIRECTORY_VIDEO:
+		return g_Config.memStickDirectory + "PSP/VIDEO/";
+	case DIRECTORY_AUDIO:
+		return g_Config.memStickDirectory + "PSP/AUDIO/";
 	// Just return the memory stick root if we run into some sort of problem.
 	default:
 		ERROR_LOG(FILESYS, "Unknown directory type.");

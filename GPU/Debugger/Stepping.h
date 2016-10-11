@@ -28,10 +28,11 @@ namespace GPUStepping {
 	bool EnterStepping(std::function<void()> callback);
 	bool IsStepping();
 
-	bool GPU_GetCurrentFramebuffer(const GPUDebugBuffer *&buffer);
+	bool GPU_GetCurrentFramebuffer(const GPUDebugBuffer *&buffer, GPUDebugFramebufferType type);
 	bool GPU_GetCurrentDepthbuffer(const GPUDebugBuffer *&buffer);
 	bool GPU_GetCurrentStencilbuffer(const GPUDebugBuffer *&buffer);
 	bool GPU_GetCurrentTexture(const GPUDebugBuffer *&buffer, int level);
+	bool GPU_GetCurrentClut(const GPUDebugBuffer *&buffer);
 	bool GPU_SetCmdValue(u32 op);
 
 	void ResumeFromStepping();

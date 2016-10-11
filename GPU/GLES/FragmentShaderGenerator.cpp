@@ -15,14 +15,6 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
-#if !defined(USING_GLES2)
-// SDL 1.2 on Apple does not have support for OpenGL 3 and hence needs
-// special treatment in the shader generator.
-#if defined(__APPLE__)
-#define FORCE_OPENGL_2_0
-#endif
-#endif
-
 #include <cstdio>
 #include <sstream>
 
@@ -60,6 +52,8 @@ bool GenerateFragmentShader(const ShaderID &id, char *buffer) {
 	bool bitwiseOps = false;
 	const char *lastFragData = nullptr;
 
+	ReplaceAlphaType stencilToAlpha = static_cast<ReplaceAlphaType>(id.Bits(FS_BIT_STENCIL_TO_ALPHA, 2));
+
 	if (gl_extensions.IsGLES) {
 		// ES doesn't support dual source alpha :(
 		if (gstate_c.featureFlags & GPU_SUPPORTS_GLSL_ES_300) {
@@ -69,6 +63,10 @@ bool GenerateFragmentShader(const ShaderID &id, char *buffer) {
 			glslES30 = true;
 			bitwiseOps = true;
 			texelFetch = "texelFetch";
+
+			if (stencilToAlpha == REPLACE_ALPHA_DUALSOURCE && gl_extensions.EXT_blend_func_extended) {
+				WRITE(p, "#extension GL_EXT_blend_func_extended : require\n");
+			}
 		} else {
 			WRITE(p, "#version 100\n");  // GLSL ES 1.0
 			if (gl_extensions.EXT_gpu_shader4) {
@@ -79,6 +77,10 @@ bool GenerateFragmentShader(const ShaderID &id, char *buffer) {
 			if (gl_extensions.EXT_blend_func_extended) {
 				// Oldy moldy GLES, so use the fixed output name.
 				fragColor1 = "gl_SecondaryFragColorEXT";
+
+				if (stencilToAlpha == REPLACE_ALPHA_DUALSOURCE && gl_extensions.EXT_blend_func_extended) {
+					WRITE(p, "#extension GL_EXT_blend_func_extended : require\n");
+				}
 			}
 		}
 
@@ -88,7 +90,7 @@ bool GenerateFragmentShader(const ShaderID &id, char *buffer) {
 		highpTexcoord = highpFog;
 
 		if (gstate_c.featureFlags & GPU_SUPPORTS_ANY_FRAMEBUFFER_FETCH) {
-			if (gl_extensions.GLES3 && gl_extensions.EXT_shader_framebuffer_fetch) {
+			if ((gstate_c.featureFlags & GPU_SUPPORTS_GLSL_ES_300) != 0 && gl_extensions.EXT_shader_framebuffer_fetch) {
 				WRITE(p, "#extension GL_EXT_shader_framebuffer_fetch : require\n");
 				lastFragData = "fragColor0";
 			} else if (gl_extensions.EXT_shader_framebuffer_fetch) {
@@ -106,32 +108,31 @@ bool GenerateFragmentShader(const ShaderID &id, char *buffer) {
 
 		WRITE(p, "precision lowp float;\n");
 	} else {
-		// TODO: Handle this in VersionGEThan?
-#if !defined(FORCE_OPENGL_2_0)
-		if (gl_extensions.VersionGEThan(3, 3, 0)) {
-			fragColor0 = "fragColor0";
-			texture = "texture";
-			glslES30 = true;
-			bitwiseOps = true;
-			texelFetch = "texelFetch";
-			WRITE(p, "#version 330\n");
-		} else if (gl_extensions.VersionGEThan(3, 0, 0)) {
-			fragColor0 = "fragColor0";
-			bitwiseOps = true;
-			texelFetch = "texelFetch";
-			WRITE(p, "#version 130\n");
-			if (gl_extensions.EXT_gpu_shader4) {
-				WRITE(p, "#extension GL_EXT_gpu_shader4 : enable\n");
-			}
-		} else {
-			WRITE(p, "#version 110\n");
-			if (gl_extensions.EXT_gpu_shader4) {
-				WRITE(p, "#extension GL_EXT_gpu_shader4 : enable\n");
+		if (!gl_extensions.ForceGL2 || gl_extensions.IsCoreContext) {
+			if (gl_extensions.VersionGEThan(3, 3, 0)) {
+				fragColor0 = "fragColor0";
+				texture = "texture";
+				glslES30 = true;
 				bitwiseOps = true;
-				texelFetch = "texelFetch2D";
+				texelFetch = "texelFetch";
+				WRITE(p, "#version 330\n");
+			} else if (gl_extensions.VersionGEThan(3, 0, 0)) {
+				fragColor0 = "fragColor0";
+				bitwiseOps = true;
+				texelFetch = "texelFetch";
+				WRITE(p, "#version 130\n");
+				if (gl_extensions.EXT_gpu_shader4) {
+					WRITE(p, "#extension GL_EXT_gpu_shader4 : enable\n");
+				}
+			} else {
+				WRITE(p, "#version 110\n");
+				if (gl_extensions.EXT_gpu_shader4) {
+					WRITE(p, "#extension GL_EXT_gpu_shader4 : enable\n");
+					bitwiseOps = true;
+					texelFetch = "texelFetch2D";
+				}
 			}
 		}
-#endif
 
 		// We remove these everywhere - GL4, GL3, Mac-forced-GL2, etc.
 		WRITE(p, "#define lowp\n");
@@ -139,7 +140,7 @@ bool GenerateFragmentShader(const ShaderID &id, char *buffer) {
 		WRITE(p, "#define highp\n");
 	}
 
-	if (glslES30) {
+	if (glslES30 || gl_extensions.IsCoreContext) {
 		varying = "in";
 	}
 
@@ -164,7 +165,6 @@ bool GenerateFragmentShader(const ShaderID &id, char *buffer) {
 	bool textureAtOffset = id.Bit(FS_BIT_TEXTURE_AT_OFFSET);
 
 	ReplaceBlendType replaceBlend = static_cast<ReplaceBlendType>(id.Bits(FS_BIT_REPLACE_BLEND, 3));
-	ReplaceAlphaType stencilToAlpha = static_cast<ReplaceAlphaType>(id.Bits(FS_BIT_STENCIL_TO_ALPHA, 2));
 
 	GEBlendSrcFactor replaceBlendFuncA = (GEBlendSrcFactor)id.Bits(FS_BIT_BLENDFUNC_A, 4);
 	GEBlendDstFactor replaceBlendFuncB = (GEBlendDstFactor)id.Bits(FS_BIT_BLENDFUNC_B, 4);
@@ -676,8 +676,20 @@ bool GenerateFragmentShader(const ShaderID &id, char *buffer) {
 #endif
 
 	if (gstate_c.Supports(GPU_ROUND_FRAGMENT_DEPTH_TO_16BIT)) {
+		const double scale = DepthSliceFactor() * 65535.0;
+
 		WRITE(p, "  highp float z = gl_FragCoord.z;\n");
-		WRITE(p, "  z = (1.0/65535.0) * floor(z * 65535.0);\n");
+		if (gstate_c.Supports(GPU_SUPPORTS_ACCURATE_DEPTH)) {
+			// We center the depth with an offset, but only its fraction matters.
+			// When (DepthSliceFactor() - 1) is odd, it will be 0.5, otherwise 0.
+			if (((int)(DepthSliceFactor() - 1.0f) & 1) == 1) {
+				WRITE(p, "  z = (floor((z * %f) - (1.0 / 2.0)) + (1.0 / 2.0)) * (1.0 / %f);\n", scale, scale);
+			} else {
+				WRITE(p, "  z = floor(z * %f) * (1.0 / %f);\n", scale, scale);
+			}
+		} else {
+			WRITE(p, "  z = (1.0/65535.0) * floor(z * 65535.0);\n");
+		}
 		WRITE(p, "  gl_FragDepth = z;\n");
 	}
 

@@ -16,8 +16,7 @@
 class AT3PlusReader {
 public:
 	AT3PlusReader(const std::string &data)
-	: file_((const uint8_t *)&data[0],
-		(int32_t)data.size()),
+	: file_((const uint8_t *)&data[0], (int32_t)data.size()),
 		raw_data_(0),
 		raw_data_size_(0),
 		raw_offset_(0),
@@ -56,6 +55,10 @@ public:
 				temp = file_.readInt();
 				raw_bytes_per_frame_ = temp & 0xFFFF;
 				Nothing = temp >> 16;
+
+				// Not currently used, but part of the format.
+				(void)avgBytesPerSec;
+				(void)Nothing;
 
 				if (codec == PSP_CODEC_AT3) {
 					// The first two bytes are actually not a useful part of the extradata.
@@ -96,7 +99,7 @@ public:
 			}
 			file_.ascend();
 		} else {
-			ELOG("Could not descend into RIFF file");
+			ELOG("Could not descend into RIFF file. Data size=%d", (int32_t)data.size());
 			return;
 		}
 		sample_rate = samplesPerSec;
@@ -207,7 +210,10 @@ int PlayBackgroundAudio() {
 	// last changed... (to prevent crazy amount of reads when skipping through a list)
 	if (!at3Reader && bgGamePath.size() && (time_now_d() - gameLastChanged > 0.5)) {
 		// Grab some audio from the current game and play it.
-		GameInfo *gameInfo = g_gameInfoCache.GetInfo(NULL, bgGamePath, GAMEINFO_WANTSND);
+		if (!g_gameInfoCache)
+			return 0;  // race condition?
+
+		GameInfo *gameInfo = g_gameInfoCache->GetInfo(NULL, bgGamePath, GAMEINFO_WANTSND);
 		if (!gameInfo)
 			return 0;
 

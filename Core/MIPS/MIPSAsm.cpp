@@ -1,17 +1,22 @@
 #ifdef _WIN32
 #include "stdafx.h"
 #endif
-#include "MIPSAsm.h"
 #include <cstdarg>
 #include <cstring>
-#include "util/text/utf8.h"
-#include "Core/MemMapHelpers.h"
-#include "Core/MIPS/JitCommon/NativeJit.h"
-#include "Core/Debugger/SymbolMap.h"
+#include <vector>
+
+#include "Common/CommonTypes.h"
 
 #if defined(_WIN32) || defined(ANDROID)
+// This has to be before basictypes to avoid a define conflict.
 #include "ext/armips/Core/Assembler.h"
 #endif
+
+#include "util/text/utf8.h"
+#include "Core/Debugger/SymbolMap.h"
+#include "Core/MemMapHelpers.h"
+#include "Core/MIPS/JitCommon/JitCommon.h"
+#include "Core/MIPS/MIPSAsm.h"
 
 namespace MIPSAsm
 {	
@@ -26,8 +31,7 @@ std::wstring GetAssembleError()
 class PspAssemblerFile: public AssemblerFile
 {
 public:
-	PspAssemblerFile()
-	{
+	PspAssemblerFile() {
 		address = 0;
 	}
 
@@ -58,8 +62,10 @@ public:
 		return true;
 	}
 	bool seekPhysical(u64 physicalAddress) override { return seekVirtual(physicalAddress); }
+	const std::wstring &getFileName() override { return dummyWFilename_; }
 private:
 	u64 address;
+	std::wstring dummyWFilename_;
 };
 #endif
 

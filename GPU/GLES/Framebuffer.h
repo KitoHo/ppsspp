@@ -35,7 +35,7 @@
 
 struct GLSLProgram;
 class TextureCache;
-class TransformDrawEngine;
+class DrawEngineGLES;
 class ShaderManager;
 
 // Simple struct for asynchronous PBO readbacks
@@ -71,11 +71,10 @@ public:
 	void SetShaderManager(ShaderManager *sm) {
 		shaderManager_ = sm;
 	}
-	void SetTransformDrawEngine(TransformDrawEngine *td) {
+	void SetTransformDrawEngine(DrawEngineGLES *td) {
 		transformDraw_ = td;
 	}
 
-	void MakePixelTexture(const u8 *srcPixels, GEBufferFormat srcPixelFormat, int srcStride, int width, int height) override;
 	void DrawPixels(VirtualFramebuffer *vfb, int dstX, int dstY, const u8 *srcPixels, GEBufferFormat srcPixelFormat, int srcStride, int width, int height) override;
 	void DrawFramebufferToOutput(const u8 *srcPixels, GEBufferFormat srcPixelFormat, int srcStride, bool applyPostShader) override;
 
@@ -83,9 +82,7 @@ public:
 	// x,y,w,h are relative to destW, destH which fill out the target completely.
 	void DrawActiveTexture(GLuint texture, float x, float y, float w, float h, float destW, float destH, float u0, float v0, float u1, float v1, GLSLProgram *program, int uvRotation);
 
-	void DrawPlainColor(u32 color);
-
-	void DestroyAllFBOs();
+	void DestroyAllFBOs(bool forceDelete);
 
 	virtual void Init() override;
 	void EndFrame();
@@ -101,19 +98,20 @@ public:
 	void BindFramebufferColor(int stage, u32 fbRawAddress, VirtualFramebuffer *framebuffer, int flags);
 
 	// Reads a rectangular subregion of a framebuffer to the right position in its backing memory.
-	virtual void ReadFramebufferToMemory(VirtualFramebuffer *vfb, bool sync, int x, int y, int w, int h) override;
+	void ReadFramebufferToMemory(VirtualFramebuffer *vfb, bool sync, int x, int y, int w, int h) override;
+	void DownloadFramebufferForClut(u32 fb_address, u32 loadBytes) override;
 
 	std::vector<FramebufferInfo> GetFramebufferList();
 
 	bool NotifyStencilUpload(u32 addr, int size, bool skipZero = false) override;
 
 	void DestroyFramebuf(VirtualFramebuffer *vfb) override;
-	void ResizeFramebufFBO(VirtualFramebuffer *vfb, u16 w, u16 h, bool force = false) override;
+	void ResizeFramebufFBO(VirtualFramebuffer *vfb, u16 w, u16 h, bool force = false, bool skipCopy = false) override;
 
-	bool GetFramebuffer(u32 fb_address, int fb_stride, GEBufferFormat format, GPUDebugBuffer &buffer);
+	bool GetFramebuffer(u32 fb_address, int fb_stride, GEBufferFormat format, GPUDebugBuffer &buffer, int maxRes);
 	bool GetDepthbuffer(u32 fb_address, int fb_stride, u32 z_address, int z_stride, GPUDebugBuffer &buffer);
 	bool GetStencilbuffer(u32 fb_address, int fb_stride, GPUDebugBuffer &buffer);
-	static bool GetDisplayFramebuffer(GPUDebugBuffer &buffer);
+	static bool GetOutputFramebuffer(GPUDebugBuffer &buffer);
 
 	virtual void RebindFramebuffer() override;
 
@@ -123,20 +121,22 @@ public:
 	struct CardboardSettings * GetCardboardSettings(struct CardboardSettings * cardboardSettings);
 
 protected:
-	virtual void DisableState() override;
-	virtual void ClearBuffer(bool keepState = false) override;
-	virtual void ClearDepthBuffer() override;
-	virtual void FlushBeforeCopy() override;
-	virtual void DecimateFBOs() override;
+	void DisableState() override;
+	void ClearBuffer(bool keepState = false) override;
+	void FlushBeforeCopy() override;
+	void DecimateFBOs() override;
 
 	// Used by ReadFramebufferToMemory and later framebuffer block copies
-	virtual void BlitFramebuffer(VirtualFramebuffer *dst, int dstX, int dstY, VirtualFramebuffer *src, int srcX, int srcY, int w, int h, int bpp) override;
+	void BlitFramebuffer(VirtualFramebuffer *dst, int dstX, int dstY, VirtualFramebuffer *src, int srcX, int srcY, int w, int h, int bpp) override;
 
-	virtual void NotifyRenderFramebufferCreated(VirtualFramebuffer *vfb) override;
-	virtual void NotifyRenderFramebufferSwitched(VirtualFramebuffer *prevVfb, VirtualFramebuffer *vfb, bool isClearingDepth) override;
-	virtual void NotifyRenderFramebufferUpdated(VirtualFramebuffer *vfb, bool vfbFormatChanged) override;
+	void NotifyRenderFramebufferCreated(VirtualFramebuffer *vfb) override;
+	void NotifyRenderFramebufferSwitched(VirtualFramebuffer *prevVfb, VirtualFramebuffer *vfb, bool isClearingDepth) override;
+	void NotifyRenderFramebufferUpdated(VirtualFramebuffer *vfb, bool vfbFormatChanged) override;
+	bool CreateDownloadTempBuffer(VirtualFramebuffer *nvfb) override;
+	void UpdateDownloadTempBuffer(VirtualFramebuffer *nvfb) override;
 
 private:
+	void MakePixelTexture(const u8 *srcPixels, GEBufferFormat srcPixelFormat, int srcStride, int width, int height);
 	void UpdatePostShaderUniforms(int bufferWidth, int bufferHeight, int renderWidth, int renderHeight);
 	void CompileDraw2DProgram();
 	void DestroyDraw2DProgram();
@@ -145,6 +145,7 @@ private:
 
 	void PackFramebufferAsync_(VirtualFramebuffer *vfb);  // Not used under ES currently
 	void PackFramebufferSync_(VirtualFramebuffer *vfb, int x, int y, int w, int h);
+	void PackDepthbuffer(VirtualFramebuffer *vfb, int x, int y, int w, int h);
 
 	// Used by DrawPixels
 	unsigned int drawPixelsTex_;
@@ -165,23 +166,18 @@ private:
 
 	TextureCache *textureCache_;
 	ShaderManager *shaderManager_;
-	TransformDrawEngine *transformDraw_;
-	bool usePostShader_;
-	bool postShaderAtOutputResolution_;
-	bool postShaderIsUpscalingFilter_;
+	DrawEngineGLES *transformDraw_;
 
 	// Used by post-processing shader
 	std::vector<FBO *> extraFBOs_;
 
 	bool resized_;
-	bool gameUsesSequentialCopies_;
 
 	struct TempFBO {
 		FBO *fbo;
 		int last_frame_used;
 	};
 
-	std::vector<VirtualFramebuffer *> bvfbs_; // blitting framebuffers (for download)
 	std::map<u64, TempFBO> tempFBOs_;
 
 	// Not used under ES currently.

@@ -34,15 +34,18 @@
 #include "input/keycodes.h"
 #include "util/text/utf8.h"
 
+#include "Common/StringUtils.h"
 #include "Core/Core.h"
 #include "Core/Config.h"
 #include "Core/CoreParameter.h"
 #include "Core/System.h"
+#include "Core/Debugger/SymbolMap.h"
 #include "Windows/EmuThread.h"
 #include "Windows/DSoundStream.h"
 #include "Windows/WindowsHost.h"
 #include "Windows/MainWindow.h"
 #include "Windows/GPU/WindowsGLContext.h"
+#include "Windows/GPU/WindowsVulkanContext.h"
 #include "Windows/GPU/D3D9Context.h"
 
 #include "Windows/Debugger/DebuggerShared.h"
@@ -53,25 +56,23 @@
 #include "Windows/XinputDevice.h"
 #include "Windows/KeyboardDevice.h"
 
-#include "Core/Debugger/SymbolMap.h"
-
-#include "Common/StringUtils.h"
 #include "Windows/main.h"
+#include "UI/OnScreenDisplay.h"
 
 static const int numCPUs = 1;
 
 float mouseDeltaX = 0;
 float mouseDeltaY = 0;
 
-static BOOL PostDialogMessage(Dialog *dialog, UINT message, WPARAM wParam = 0, LPARAM lParam = 0)
-{
+static BOOL PostDialogMessage(Dialog *dialog, UINT message, WPARAM wParam = 0, LPARAM lParam = 0) {
 	return PostMessage(dialog->GetDlgHandle(), message, wParam, lParam);
 }
 
-WindowsHost::WindowsHost(HWND mainWindow, HWND displayWindow)
+WindowsHost::WindowsHost(HINSTANCE hInstance, HWND mainWindow, HWND displayWindow)
+	: gfx_(nullptr), hInstance_(hInstance),
+		mainWindow_(mainWindow),
+		displayWindow_(displayWindow)
 {
-	mainWindow_ = mainWindow;
-	displayWindow_ = displayWindow;
 	mouseDeltaX = 0;
 	mouseDeltaY = 0;
 
@@ -97,33 +98,44 @@ void WindowsHost::SetConsolePosition() {
 void WindowsHost::UpdateConsolePosition() {
 	RECT rc;
 	HWND console = GetConsoleWindow();
-	if (console != NULL && GetWindowRect(console, &rc) && !IsIconic(console))
-	{
+	if (console != NULL && GetWindowRect(console, &rc) && !IsIconic(console)) {
 		g_Config.iConsoleWindowX = rc.left;
 		g_Config.iConsoleWindowY = rc.top;
 	}
 }
 
-bool WindowsHost::InitGraphics(std::string *error_message) {
+bool WindowsHost::InitGraphics(std::string *error_message, GraphicsContext **ctx) {
+	WindowsGraphicsContext *graphicsContext = nullptr;
 	switch (g_Config.iGPUBackend) {
 	case GPU_BACKEND_OPENGL:
-		return GL_Init(displayWindow_, error_message);
+		graphicsContext = new WindowsGLContext();
+		break;
 	case GPU_BACKEND_DIRECT3D9:
-		return D3D9_Init(displayWindow_, true, error_message);
+		graphicsContext = new D3D9Context();
+		break;
+	case GPU_BACKEND_VULKAN:
+		graphicsContext = new WindowsVulkanContext();
+		break;
 	default:
+		return false;
+	}
+
+	if (graphicsContext->Init(hInstance_, displayWindow_, error_message)) {
+		*ctx = graphicsContext;
+		gfx_ = graphicsContext;
+		return true;
+	} else {
+		delete graphicsContext;
+		*ctx = nullptr;
+		gfx_ = nullptr;
 		return false;
 	}
 }
 
 void WindowsHost::ShutdownGraphics() {
-	switch (g_Config.iGPUBackend) {
-	case GPU_BACKEND_OPENGL:
-		GL_Shutdown();
-		break;
-	case GPU_BACKEND_DIRECT3D9:
-		D3D9_Shutdown();
-		break;
-	}
+	gfx_->Shutdown();
+	delete gfx_;
+	gfx_ = nullptr;
 	PostMessage(mainWindow_, WM_CLOSE, 0, 0);
 }
 
@@ -335,4 +347,8 @@ void WindowsHost::GoFullscreen(bool viewFullscreen) {
 
 void WindowsHost::ToggleDebugConsoleVisibility() {
 	MainWindow::ToggleDebugConsoleVisibility();
+}
+
+void WindowsHost::NotifyUserMessage(const std::string &message, float duration, u32 color, const char *id) {
+	osm.Show(message, duration, color, -1, true, id);
 }

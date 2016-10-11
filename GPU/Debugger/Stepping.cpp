@@ -30,6 +30,7 @@ enum PauseAction {
 	PAUSE_GETDEPTHBUF,
 	PAUSE_GETSTENCILBUF,
 	PAUSE_GETTEX,
+	PAUSE_GETCLUT,
 	PAUSE_SETCMDVALUE,
 };
 
@@ -48,10 +49,12 @@ static volatile bool actionComplete;
 // Below are values used to perform actions that return results.
 
 static bool bufferResult;
+static GPUDebugFramebufferType bufferType = GPU_DBG_FRAMEBUF_RENDER;
 static GPUDebugBuffer bufferFrame;
 static GPUDebugBuffer bufferDepth;
 static GPUDebugBuffer bufferStencil;
 static GPUDebugBuffer bufferTex;
+static GPUDebugBuffer bufferClut;
 static int bufferLevel;
 static u32 pauseSetCmdValue;
 
@@ -82,7 +85,7 @@ static void RunPauseAction() {
 		break;
 
 	case PAUSE_GETFRAMEBUF:
-		bufferResult = gpuDebug->GetCurrentFramebuffer(bufferFrame);
+		bufferResult = gpuDebug->GetCurrentFramebuffer(bufferFrame, bufferType);
 		break;
 
 	case PAUSE_GETDEPTHBUF:
@@ -95,6 +98,10 @@ static void RunPauseAction() {
 
 	case PAUSE_GETTEX:
 		bufferResult = gpuDebug->GetCurrentTexture(bufferTex, bufferLevel);
+		break;
+
+	case PAUSE_GETCLUT:
+		bufferResult = gpuDebug->GetCurrentClut(bufferClut);
 		break;
 
 	case PAUSE_SETCMDVALUE:
@@ -154,7 +161,8 @@ static bool GetBuffer(const GPUDebugBuffer *&buffer, PauseAction type, const GPU
 	return bufferResult;
 }
 
-bool GPU_GetCurrentFramebuffer(const GPUDebugBuffer *&buffer) {
+bool GPU_GetCurrentFramebuffer(const GPUDebugBuffer *&buffer, GPUDebugFramebufferType type) {
+	bufferType = type;
 	return GetBuffer(buffer, PAUSE_GETFRAMEBUF, bufferFrame);
 }
 
@@ -169,6 +177,10 @@ bool GPU_GetCurrentStencilbuffer(const GPUDebugBuffer *&buffer) {
 bool GPU_GetCurrentTexture(const GPUDebugBuffer *&buffer, int level) {
 	bufferLevel = level;
 	return GetBuffer(buffer, PAUSE_GETTEX, bufferTex);
+}
+
+bool GPU_GetCurrentClut(const GPUDebugBuffer *&buffer) {
+	return GetBuffer(buffer, PAUSE_GETCLUT, bufferClut);
 }
 
 bool GPU_SetCmdValue(u32 op) {

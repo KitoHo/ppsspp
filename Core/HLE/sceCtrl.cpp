@@ -17,6 +17,7 @@
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
 #include <math.h>
+#include "base/mutex.h"
 #include "Globals.h"
 #include "Core/HLE/HLE.h"
 #include "Core/HLE/FunctionWrappers.h"
@@ -24,7 +25,6 @@
 #include "Core/CoreTiming.h"
 #include "Core/MemMapHelpers.h"
 #include "Common/ChunkFile.h"
-#include "Common/StdMutex.h"
 #include "Core/HLE/sceCtrl.h"
 #include "Core/HLE/sceDisplay.h"
 #include "Core/HLE/sceKernel.h"
@@ -84,7 +84,7 @@ static int ctrlIdleBack = -1;
 static int ctrlCycle = 0;
 
 static std::vector<SceUID> waitingThreads;
-static std::recursive_mutex ctrlMutex;
+static recursive_mutex ctrlMutex;
 
 static int ctrlTimer = -1;
 
@@ -101,8 +101,8 @@ const u32 CTRL_EMU_RAPIDFIRE_MASK = CTRL_UP | CTRL_DOWN | CTRL_LEFT | CTRL_RIGHT
 
 static void __CtrlUpdateLatch()
 {
-	std::lock_guard<std::recursive_mutex> guard(ctrlMutex);
-	
+	lock_guard guard(ctrlMutex);
+
 	// Copy in the current data to the current buffer.
 	ctrlBufs[ctrlBuf] = ctrlCurrent;
 	u32 buttons = ctrlCurrent.buttons;
@@ -119,7 +119,7 @@ static void __CtrlUpdateLatch()
 	latch.btnRelease |= ~buttons;
 	dialogBtnMake |= buttons & changed;
 	ctrlLatchBufs++;
-		
+
 	ctrlOldButtons = buttons;
 
 	ctrlBufs[ctrlBuf].frame = (u32) CoreTiming::GetGlobalTimeUs();
@@ -144,14 +144,14 @@ static int __CtrlResetLatch()
 
 u32 __CtrlPeekButtons()
 {
-	std::lock_guard<std::recursive_mutex> guard(ctrlMutex);
+	lock_guard guard(ctrlMutex);
 
 	return ctrlCurrent.buttons;
 }
 
 void __CtrlPeekAnalog(int stick, float *x, float *y)
 {
-	std::lock_guard<std::recursive_mutex> guard(ctrlMutex);
+	lock_guard guard(ctrlMutex);
 
 	*x = (ctrlCurrent.analog[stick][CTRL_ANALOG_X] - 127.5f) / 127.5f;
 	*y = -(ctrlCurrent.analog[stick][CTRL_ANALOG_Y] - 127.5f) / 127.5f;
@@ -170,27 +170,27 @@ u32 __CtrlReadLatch()
 
 void __CtrlButtonDown(u32 buttonBit)
 {
-	std::lock_guard<std::recursive_mutex> guard(ctrlMutex);
+	lock_guard guard(ctrlMutex);
 	ctrlCurrent.buttons |= buttonBit;
 }
 
 void __CtrlButtonUp(u32 buttonBit)
 {
-	std::lock_guard<std::recursive_mutex> guard(ctrlMutex);
+	lock_guard guard(ctrlMutex);
 	ctrlCurrent.buttons &= ~buttonBit;
 }
 
 void __CtrlSetAnalogX(float x, int stick)
 {
 	u8 scaled = clamp_u8((int)ceilf(x * 127.5f + 127.5f));
-	std::lock_guard<std::recursive_mutex> guard(ctrlMutex);
+	lock_guard guard(ctrlMutex);
 	ctrlCurrent.analog[stick][CTRL_ANALOG_X] = scaled;
 }
 
 void __CtrlSetAnalogY(float y, int stick)
 {
 	u8 scaled = clamp_u8((int)ceilf(-y * 127.5f + 127.5f));
-	std::lock_guard<std::recursive_mutex> guard(ctrlMutex);
+	lock_guard guard(ctrlMutex);
 	ctrlCurrent.analog[stick][CTRL_ANALOG_Y] = scaled;
 }
 
@@ -304,7 +304,7 @@ void __CtrlInit()
 	ctrlIdleBack = -1;
 	ctrlCycle = 0;
 
-	std::lock_guard<std::recursive_mutex> guard(ctrlMutex);
+	lock_guard guard(ctrlMutex);
 
 	ctrlBuf = 1;
 	ctrlBufRead = 0;
@@ -326,8 +326,8 @@ void __CtrlInit()
 
 void __CtrlDoState(PointerWrap &p)
 {
-	std::lock_guard<std::recursive_mutex> guard(ctrlMutex);
-	
+	lock_guard guard(ctrlMutex);
+
 	auto s = p.Section("sceCtrl", 1, 3);
 	if (!s)
 		return;
@@ -519,7 +519,7 @@ static u32 sceCtrlReadLatch(u32 latchDataPtr)
 	return __CtrlResetLatch();
 }
 
-static const HLEFunction sceCtrl[] = 
+static const HLEFunction sceCtrl[] =
 {
 	{0X3E65A0EA, nullptr,                                  "sceCtrlInit",                      '?', ""  }, //(int unknown), init with 0
 	{0X1F4011E6, &WrapU_U<sceCtrlSetSamplingMode>,         "sceCtrlSetSamplingMode",           'x', "x" },
@@ -538,7 +538,7 @@ static const HLEFunction sceCtrl[] =
 	{0X6841BE1A, nullptr,                                  "sceCtrlSetRapidFire",              '?', ""  },
 	{0XA7144800, &WrapI_II<sceCtrlSetIdleCancelThreshold>, "sceCtrlSetIdleCancelThreshold",    'i', "ii"},
 	{0X687660FA, &WrapI_UU<sceCtrlGetIdleCancelThreshold>, "sceCtrlGetIdleCancelThreshold",    'i', "xx"},
-};	
+};
 
 void Register_sceCtrl()
 {

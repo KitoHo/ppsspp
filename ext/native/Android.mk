@@ -62,6 +62,7 @@ LOCAL_SRC_FILES :=\
     net/http_server.cpp \
     net/http_headers.cpp \
     net/resolve.cpp \
+    net/sinks.cpp \
     net/url.cpp \
     profiler/profiler.cpp \
     thread/executor.cpp \
@@ -81,6 +82,7 @@ LOCAL_SRC_FILES :=\
     image/png_load.cpp \
     thin3d/thin3d.cpp \
     thin3d/thin3d_gl.cpp \
+    thin3d/thin3d_vulkan.cpp \
     ui/view.cpp \
     ui/viewgroup.cpp \
     ui/ui.cpp \
@@ -90,11 +92,12 @@ LOCAL_SRC_FILES :=\
     ui/virtual_input.cpp \
     util/text/utf8.cpp \
     util/text/parsers.cpp \
+    util/text/wrap_text.cpp \
     util/hash/hash.cpp
 
 LOCAL_CFLAGS := -O3 -DUSING_GLES2 -fsigned-char -fno-strict-aliasing -Wall -Wno-multichar -D__STDC_CONSTANT_MACROS
 LOCAL_CPPFLAGS := -fno-exceptions -std=gnu++11 -fno-rtti -Wno-reorder
-LOCAL_C_INCLUDES := $(LOCAL_PATH)/ext $(LOCAL_PATH)/ext/libzip
+LOCAL_C_INCLUDES := $(LOCAL_PATH)/ext $(LOCAL_PATH)/ext/libzip ..
 
 #Portable native and separate code on android in future is easy you needs add files 
 #by ($(target_arch_ABI),arquitecture (armeabi-v7a , armeabi , x86 , MIPS)
@@ -113,6 +116,10 @@ else ifeq ($(TARGET_ARCH_ABI),arm64-v8a)
 LOCAL_CFLAGS := $(LOCAL_CFLAGS) -D_ARCH_64 -DARM64
 else ifeq ($(TARGET_ARCH_ABI),x86)
 LOCAL_CFLAGS := $(LOCAL_CFLAGS) -D_M_IX86
+LOCAL_SRC_FILES := $(LOCAL_SRC_FILES) \
+    math/fast/fast_matrix_sse.c
+else ifeq ($(TARGET_ARCH_ABI),x86_64)
+LOCAL_CFLAGS := $(LOCAL_CFLAGS) -D_M_X64
 LOCAL_SRC_FILES := $(LOCAL_SRC_FILES) \
     math/fast/fast_matrix_sse.c
 endif

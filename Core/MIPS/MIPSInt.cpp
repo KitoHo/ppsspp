@@ -85,19 +85,6 @@ int MIPS_SingleStep()
 	return 1;
 }
 
-u32 MIPS_GetNextPC()
-{
-	if (mipsr4k.inDelaySlot)
-		return mipsr4k.nextPC;
-	else
-		return mipsr4k.pc + 4;
-}
-
-void MIPS_ClearDelaySlot()
-{
-	mipsr4k.inDelaySlot = false;
-}
-
 namespace MIPSInt
 {
 	void Int_Cache(MIPSOpcode op)
@@ -673,11 +660,13 @@ namespace MIPSInt
 				s32 b = (s32)R(rt);
 				if (a == (s32)0x80000000 && b == -1) {
 					LO = 0x80000000;
+					HI = -1;
 				} else if (b != 0) {
 					LO = (u32)(a / b);
 					HI = (u32)(a % b);
 				} else {
-					LO = HI = 0;	// Not sure what the right thing to do is?
+					LO = a < 0 ? 1 : -1;
+					HI = a;
 				}
 			}
 			break;
@@ -685,12 +674,12 @@ namespace MIPSInt
 			{
 				u32 a = R(rs);
 				u32 b = R(rt);
-				if (b != 0) 
-				{
+				if (b != 0) {
 					LO = (a/b);
 					HI = (a%b);
 				} else {
-					LO = HI = 0;
+					LO = a <= 0xFFFF ? 0xFFFF : -1;
+					HI = a;
 				}
 			}
 			break;
@@ -834,14 +823,14 @@ namespace MIPSInt
 		{
 		case 36:  // mfic
 			if (!reported) {
-				Reporting::ReportMessage("MFIC instruction hit (%08x) at %08x", op, currentMIPS->pc);
+				Reporting::ReportMessage("MFIC instruction hit (%08x) at %08x", op.encoding, currentMIPS->pc);
 				WARN_LOG(CPU,"MFIC Disable/Enable Interrupt CPU instruction");
 				reported = 1;
 			}
 			break;
 		case 38:  // mtic
 			if (!reported) {
-				Reporting::ReportMessage("MTIC instruction hit (%08x) at %08x", op, currentMIPS->pc);
+				Reporting::ReportMessage("MTIC instruction hit (%08x) at %08x", op.encoding, currentMIPS->pc);
 				WARN_LOG(CPU,"MTIC Disable/Enable Interrupt CPU instruction");
 				reported = 1;
 			}
@@ -1027,7 +1016,7 @@ namespace MIPSInt
 		{
 		case 0:
 			if (!reported) {
-				Reporting::ReportMessage("INTERRUPT instruction hit (%08x) at %08x", op, currentMIPS->pc);
+				Reporting::ReportMessage("INTERRUPT instruction hit (%08x) at %08x", op.encoding, currentMIPS->pc);
 				WARN_LOG(CPU,"Disable/Enable Interrupt CPU instruction");
 				reported = 1;
 			}

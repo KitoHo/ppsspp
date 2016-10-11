@@ -214,6 +214,11 @@ public:
 	virtual void InitClear() = 0;
 	virtual void Reinitialize() = 0;
 
+	// Frame managment
+	virtual void BeginHostFrame() = 0;
+	virtual void EndHostFrame() = 0;
+
+	// Events
 	virtual void RunEventsUntil(u64 globalticks) = 0;
 	virtual void FinishEventLoop() = 0;
 
@@ -243,11 +248,12 @@ public:
 	virtual void CopyDisplayToOutput() = 0;
 
 	// Tells the GPU to update the gpuStats structure.
-	virtual void UpdateStats() = 0;
+	virtual void GetStats(char *buffer, size_t bufsize) = 0;
 
 	// Invalidate any cached content sourced from the specified range.
 	// If size = -1, invalidate everything.
 	virtual void InvalidateCache(u32 addr, int size, GPUInvalidationType type) = 0;
+	virtual void NotifyVideoUpload(u32 addr, int size, int width, int format) = 0;
 	// Update either RAM from VRAM, or VRAM from RAM... or even VRAM from VRAM.
 	virtual bool PerformMemoryCopy(u32 dest, u32 src, int size) = 0;
 	virtual bool PerformMemorySet(u32 dest, u8 v, int size) = 0;
@@ -262,6 +268,7 @@ public:
 	virtual void EnableInterrupts(bool enable) = 0;
 
 	virtual void DeviceLost() = 0;
+	virtual void DeviceRestore() = 0;
 	virtual void ReapplyGfxState() = 0;
 	virtual void SyncThread(bool force = false) = 0;
 	virtual void SyncBeginFrame() = 0;

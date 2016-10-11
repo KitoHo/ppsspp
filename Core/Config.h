@@ -30,6 +30,14 @@ extern const char *PPSSPP_GIT_VERSION;
 const int PSP_MODEL_FAT = 0;
 const int PSP_MODEL_SLIM = 1;
 const int PSP_DEFAULT_FIRMWARE = 150;
+static const s8 VOLUME_OFF = 0;
+static const s8 VOLUME_MAX = 10;
+
+enum CPUCore {
+	CPU_CORE_INTERPRETER = 0,
+	CPU_CORE_JIT = 1,
+	CPU_CORE_IRJIT = 2,
+};
 
 enum {
 	ROTATION_AUTO = 0,
@@ -45,9 +53,17 @@ enum BufferFilter {
 };
 
 // Software is not among these because it will have one of these perform the blit to display.
+enum class GPUBackend {
+	OPENGL = 0,
+	DIRECT3D9 = 1,
+	DIRECT3D11 = 2,
+	VULKAN = 3,
+};
 enum {
-	GPU_BACKEND_OPENGL = 0,
-	GPU_BACKEND_DIRECT3D9 = 1,
+	GPU_BACKEND_OPENGL = (int)GPUBackend::OPENGL,
+	GPU_BACKEND_DIRECT3D9 = (int)GPUBackend::DIRECT3D9,
+	GPU_BACKEND_DIRECT3D11 = (int)GPUBackend::DIRECT3D11,
+	GPU_BACKEND_VULKAN = (int)GPUBackend::VULKAN,
 };
 
 enum AudioBackendType {
@@ -88,6 +104,9 @@ public:
 	// General
 	int iNumWorkerThreads;
 	bool bScreenshotsAsPNG;
+	bool bUseFFV1;
+	bool bDumpFrames;
+	bool bDumpAudio;
 	bool bEnableLogging;
 	bool bDumpDecryptedEboot;
 	bool bFullscreenOnDoubleclick;
@@ -96,9 +115,6 @@ public:
 	bool bTopMost;
 	std::string sFont;
 	bool bIgnoreWindowsKey;
-	// Used for switching the GPU backend in GameSettingsScreen.
-	// Without this, PPSSPP instantly crashes if we edit iGPUBackend directly...
-	int iTempGPUBackend;
 
 	bool bRestartRequired;
 #endif
@@ -108,11 +124,12 @@ public:
 #if !defined(MOBILE_DEVICE)
 	bool bPauseExitsEmulator;
 #endif
+	bool bPS3Controller;
 
 	// Core
 	bool bIgnoreBadMemAccess;
 	bool bFastMemory;
-	bool bJit;
+	int iCpuCore;
 	bool bCheckForNewVersion;
 	bool bForceLagSync;
 	bool bFuncReplacements;
@@ -125,6 +142,8 @@ public:
 	int iLockedCPUSpeed;
 	bool bAutoSaveSymbolMap;
 	bool bCacheFullIsoInRam;
+	int iRemoteISOPort;
+	bool bMemStickInserted;
 
 	int iScreenRotation;  // The rotation angle of the PPSSPP UI. Only supported on Android and possibly other mobile platforms.
 	int iInternalScreenRotation;  // The internal screen rotation angle. Useful for vertical SHMUPs and similar.
@@ -143,12 +162,10 @@ public:
 	int iRenderingMode; // 0 = non-buffered rendering 1 = buffered rendering 2 = Read Framebuffer to memory (CPU) 3 = Read Framebuffer to memory (GPU)
 	int iTexFiltering; // 1 = off , 2 = nearest , 3 = linear , 4 = linear(CG)
 	int iBufFilter; // 1 = linear, 2 = nearest
-	bool bPartialStretch;
-	bool bStretchToDisplay;
-	int iSmallDisplayZoom;  // Used to fit display into screen 0 = auto, anything higher is used to set's integer zoom of psp resolution and allows manual editing
+	int iSmallDisplayZoomType;  // Used to fit display into screen 0 = stretch, 1 = partial stretch, 2 = auto scaling, 3 = manual scaling.
 	float fSmallDisplayOffsetX; // Along with Y it goes from 0.0 to 1.0, XY (0.5, 0.5) = center of the screen
 	float fSmallDisplayOffsetY;
-	float fSmallDisplayCustomZoom; //This is actually used for zoom, both in and out.
+	float fSmallDisplayZoomLevel; //This is used for zoom values, both in and out.
 	bool bImmersiveMode;  // Mode on Android Kitkat 4.4 that hides the back button etc.
 	bool bVSync;
 	int iFrameSkip;
@@ -172,8 +189,11 @@ public:
 	bool bFullScreen;
 	int iInternalResolution;  // 0 = Auto (native), 1 = 1x (480x272), 2 = 2x, 3 = 3x, 4 = 4x and so on.
 	int iAnisotropyLevel;  // 0 - 5, powers of 2: 0 = 1x = no aniso
+	int bHighQualityDepth;
 	bool bTrueColor;
 	bool bMipMap;
+	bool bReplaceTextures;
+	bool bSaveNewTextures;
 	int iTexScalingLevel; // 1 = off, 2 = 2x, ..., 5 = 5x
 	int iTexScalingType; // 0 = xBRZ, 1 = Hybrid
 	bool bTexDeposterize;
@@ -190,7 +210,6 @@ public:
 	bool bAlwaysDepthWrite;
 	int iBloomHack; //0 = off, 1 = safe, 2 = balanced, 3 = aggressive
 	bool bTimerHack;
-	bool bAlphaMaskHack;
 	bool bBlockTransferGPU;
 	bool bDisableSlowFramebufEffects;
 	bool bFragmentTestCache;
@@ -202,6 +221,7 @@ public:
 	bool bEnableSound;
 	int iAudioLatency; // 0 = low , 1 = medium(default) , 2 = high
 	int iAudioBackend;
+	int iGlobalVolume;
 
 	// Audio Hack
 	bool bSoundSpeedHack;
@@ -219,7 +239,7 @@ public:
 	//considers this orientation to be equal to no movement of the analog stick.
 	float fTiltBaseX, fTiltBaseY;
 	//whether the x axes and y axes should invert directions (left becomes right, top becomes bottom.)
-	bool bInvertTiltX, bInvertTiltY; 
+	bool bInvertTiltX, bInvertTiltY;
 	//the sensitivity of the tilt in the x direction
 	int iTiltSensitivityX;
 	//the sensitivity of the tilt in the Y direction
@@ -242,8 +262,8 @@ public:
 	bool bGamepadOnlyFocused;
 	// Control Style
 	int iTouchButtonStyle;
-	// Control Positions
 	int iTouchButtonOpacity;
+	int iTouchButtonHideSeconds;
 	// Floating analog stick (recenters on thumb on press).
 	bool bAutoCenterTouchAnalog;
 
@@ -314,7 +334,7 @@ public:
 	bool bShowComboKey2;
 	bool bShowComboKey3;
 	bool bShowComboKey4;
-	
+
 	// Combo_key mapping. These are bitfields.
 	int iCombokey0;
 	int iCombokey1;
@@ -343,9 +363,9 @@ public:
 	// proper options when good enough.
 	// PrescaleUV:
 	//   * Applies UV scale/offset when decoding verts. Get rid of some work in the vertex shader,
-	//     saves a uniform upload and is a prerequisite for future optimized hybrid 
+	//     saves a uniform upload and is a prerequisite for future optimized hybrid
 	//     (SW skinning, HW transform) skinning.
-	//   * Still has major problems so off by default - need to store tex scale/offset per DeferredDrawCall, 
+	//   * Still has major problems so off by default - need to store tex scale/offset per DeferredDrawCall,
 	//     which currently isn't done so if texscale/offset isn't static (like in Tekken 6) things go wrong.
 	bool bPrescaleUV;
 	bool bDisableAlphaTest;  // Helps PowerVR immensely, breaks some graphics
@@ -361,6 +381,7 @@ public:
 	std::string sNickName;
 	std::string proAdhocServer;
 	std::string sMACAddress;
+	int iPortOffset;
 	int iLanguage;
 	int iTimeFormat;
 	int iDateFormat;
@@ -407,10 +428,11 @@ public:
 	bool bShowFrameProfiler;
 
 	std::string currentDirectory;
-	std::string externalDirectory; 
+	std::string externalDirectory;
 	std::string memStickDirectory;
 	std::string flash0Directory;
 	std::string internalDataDirectory;
+	std::string appCacheDirectory;
 
 	// Data for upgrade prompt
 	std::string upgradeMessage;  // The actual message from the server is currently not used, need a translation mechanism. So this just acts as a flag.
@@ -420,7 +442,7 @@ public:
 	void Load(const char *iniFileName = nullptr, const char *controllerIniFilename = nullptr);
 	void Save();
 	void RestoreDefaults();
-	
+
 	//per game config managment, should maybe be in it's own class
 	void changeGameSpecific(const std::string &gameId = "");
 	bool createGameConfig(const std::string &game_id);
@@ -451,7 +473,10 @@ public:
 	bool IsPortrait() const {
 		return (iInternalScreenRotation == ROTATION_LOCKED_VERTICAL || iInternalScreenRotation == ROTATION_LOCKED_VERTICAL180) && iRenderingMode != 0;
 	}
-	
+
+protected:
+	void LoadStandardControllerIni();
+
 private:
 	std::string gameId_;
 	std::string iniFilename_;

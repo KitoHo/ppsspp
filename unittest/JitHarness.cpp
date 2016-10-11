@@ -18,9 +18,10 @@
 #include <algorithm>
 
 #include "base/timeutil.h"
+#include "base/NativeApp.h"
 #include "input/input_state.h"
 #include "Core/MIPS/JitCommon/JitCommon.h"
-#include "Core/MIPS/JitCommon/NativeJit.h"
+#include "Core/MIPS/JitCommon/JitBlockCache.h"
 #include "Core/MIPS/MIPSCodeUtils.h"
 #include "Core/MIPS/MIPSDebugInterface.h"
 #include "Core/MIPS/MIPSAsm.h"
@@ -32,18 +33,14 @@
 
 struct InputState;
 // Temporary hacks around annoying linking errors.  Copied from Headless.
-void D3D9_SwapBuffers() { }
-void GL_SwapBuffers() { }
 void NativeUpdate(InputState &input_state) { }
-void NativeRender() { }
+void NativeRender(GraphicsContext *graphicsContext) { }
 void NativeResized() { }
 
 void System_SendMessage(const char *command, const char *parameter) {}
 bool System_InputBoxGetWString(const wchar_t *title, const std::wstring &defaultvalue, std::wstring &outvalue) { return false; }
-
-#ifndef _WIN32
-InputState input_state;
-#endif
+void System_AskForPermission(SystemPermission permission) {}
+PermissionStatus System_GetPermissionStatus(SystemPermission permission) { return PERMISSION_STATUS_GRANTED; }
 
 void UnitTestTerminator() {
 	// Bails out of jit so we can time things.
@@ -84,7 +81,7 @@ static void SetupJitHarness() {
 	coreState = CORE_POWERUP;
 	currentMIPS = &mipsr4k;
 	Memory::g_MemorySize = Memory::RAM_NORMAL_SIZE;
-	PSP_CoreParameter().cpuCore = CPU_INTERPRETER;
+	PSP_CoreParameter().cpuCore = CPU_CORE_INTERPRETER;
 	PSP_CoreParameter().unthrottle = true;
 
 	Memory::Init();
@@ -170,7 +167,7 @@ bool TestJit() {
 	double jit_speed = 0.0, interp_speed = 0.0;
 	if (compileSuccess) {
 		interp_speed = ExecCPUTest();
-		mipsr4k.UpdateCore(CPU_JIT);
+		mipsr4k.UpdateCore(CPU_CORE_JIT);
 		jit_speed = ExecCPUTest();
 
 		// Disassemble

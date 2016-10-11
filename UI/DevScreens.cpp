@@ -34,7 +34,7 @@
 #include "Core/System.h"
 #include "Core/CoreParameter.h"
 #include "Core/MIPS/MIPSTables.h"
-#include "Core/MIPS/JitCommon/NativeJit.h"
+#include "Core/MIPS/JitCommon/JitBlockCache.h"
 #include "Core/MIPS/JitCommon/JitCommon.h"
 #include "GPU/GPUInterface.h"
 #include "GPU/GPUState.h"
@@ -61,19 +61,25 @@ void DevMenu::CreatePopupContents(UI::ViewGroup *parent) {
 	I18NCategory *dev = GetI18NCategory("Developer");
 	I18NCategory *sy = GetI18NCategory("System");
 
+	ScrollView *scroll = new ScrollView(ORIENT_VERTICAL, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT, 1.0f));
+	LinearLayout *items = new LinearLayout(ORIENT_VERTICAL);
+
 #if !defined(MOBILE_DEVICE)
-	parent->Add(new Choice(dev->T("Log View")))->OnClick.Handle(this, &DevMenu::OnLogView);
+	items->Add(new Choice(dev->T("Log View")))->OnClick.Handle(this, &DevMenu::OnLogView);
 #endif
-	parent->Add(new Choice(dev->T("Logging Channels")))->OnClick.Handle(this, &DevMenu::OnLogConfig);
-	parent->Add(new Choice(sy->T("Developer Tools")))->OnClick.Handle(this, &DevMenu::OnDeveloperTools);
-	parent->Add(new Choice(dev->T("Jit Compare")))->OnClick.Handle(this, &DevMenu::OnJitCompare);
-	parent->Add(new Choice(dev->T("Shader Viewer")))->OnClick.Handle(this, &DevMenu::OnShaderView);
-	parent->Add(new Choice(dev->T("Toggle Freeze")))->OnClick.Handle(this, &DevMenu::OnFreezeFrame);
-	parent->Add(new Choice(dev->T("Dump Frame GPU Commands")))->OnClick.Handle(this, &DevMenu::OnDumpFrame);
-	parent->Add(new Choice(dev->T("Toggle Audio Debug")))->OnClick.Handle(this, &DevMenu::OnToggleAudioDebug);
+	items->Add(new Choice(dev->T("Logging Channels")))->OnClick.Handle(this, &DevMenu::OnLogConfig);
+	items->Add(new Choice(sy->T("Developer Tools")))->OnClick.Handle(this, &DevMenu::OnDeveloperTools);
+	items->Add(new Choice(dev->T("Jit Compare")))->OnClick.Handle(this, &DevMenu::OnJitCompare);
+	items->Add(new Choice(dev->T("Shader Viewer")))->OnClick.Handle(this, &DevMenu::OnShaderView);
+	items->Add(new Choice(dev->T("Toggle Freeze")))->OnClick.Handle(this, &DevMenu::OnFreezeFrame);
+	items->Add(new Choice(dev->T("Dump Frame GPU Commands")))->OnClick.Handle(this, &DevMenu::OnDumpFrame);
+	items->Add(new Choice(dev->T("Toggle Audio Debug")))->OnClick.Handle(this, &DevMenu::OnToggleAudioDebug);
 #ifdef USE_PROFILER
-	parent->Add(new CheckBox(&g_Config.bShowFrameProfiler, dev->T("Frame Profiler"), ""));
+	items->Add(new CheckBox(&g_Config.bShowFrameProfiler, dev->T("Frame Profiler"), ""));
 #endif
+
+	scroll->Add(items);
+	parent->Add(scroll);
 
 	RingbufferLogListener *ring = LogManager::GetInstance()->GetRingbufferListener();
 	if (ring) {
@@ -320,9 +326,11 @@ void SystemInfoScreen::CreateViews() {
 	AddStandardBack(root_);
 
 	TabHolder *tabHolder = new TabHolder(ORIENT_VERTICAL, 225, new AnchorLayoutParams(10, 0, 10, 0, false));
+	tabHolder->SetTag("DevSystemInfo");
 
 	root_->Add(tabHolder);
 	ViewGroup *deviceSpecsScroll = new ScrollView(ORIENT_VERTICAL, new LinearLayoutParams(FILL_PARENT, FILL_PARENT));
+	deviceSpecsScroll->SetTag("DevSystemInfoDeviceSpecs");
 	LinearLayout *deviceSpecs = new LinearLayout(ORIENT_VERTICAL);
 	deviceSpecs->SetSpacing(0);
 	deviceSpecsScroll->Add(deviceSpecs);
@@ -350,7 +358,7 @@ void SystemInfoScreen::CreateViews() {
 	deviceSpecs->Add(new InfoItem("Model", thin3d->GetInfoString(T3DInfo::RENDERER)));
 #ifdef _WIN32
 	deviceSpecs->Add(new InfoItem("Driver Version", System_GetProperty(SYSPROP_GPUDRIVER_VERSION)));
-	if (g_Config.iGPUBackend == GPU_BACKEND_DIRECT3D9) {
+	if (GetGPUBackend() == GPUBackend::DIRECT3D9) {
 		deviceSpecs->Add(new InfoItem("D3DX Version", StringFromFormat("%d", GetD3DXVersion())));
 	}
 #endif
@@ -372,7 +380,7 @@ void SystemInfoScreen::CreateViews() {
 
 	deviceSpecs->Add(new ItemHeader("Version Information"));
 	std::string apiVersion;
-	if (g_Config.iGPUBackend == GPU_BACKEND_OPENGL) {
+	if (GetGPUBackend() == GPUBackend::OPENGL) {
 		if (gl_extensions.IsGLES) {
 			apiVersion = StringFromFormat("v%d.%d.%d ES", gl_extensions.ver[0], gl_extensions.ver[1], gl_extensions.ver[2]);
 		} else {
@@ -401,6 +409,7 @@ void SystemInfoScreen::CreateViews() {
 #endif
 
 	ViewGroup *cpuExtensionsScroll = new ScrollView(ORIENT_VERTICAL, new LinearLayoutParams(FILL_PARENT, FILL_PARENT));
+	cpuExtensionsScroll->SetTag("DevSystemInfoCPUExt");
 	LinearLayout *cpuExtensions = new LinearLayout(ORIENT_VERTICAL);
 	cpuExtensions->SetSpacing(0);
 	cpuExtensionsScroll->Add(cpuExtensions);
@@ -415,44 +424,55 @@ void SystemInfoScreen::CreateViews() {
 	}
 
 	ViewGroup *oglExtensionsScroll = new ScrollView(ORIENT_VERTICAL, new LinearLayoutParams(FILL_PARENT, FILL_PARENT));
+	oglExtensionsScroll->SetTag("DevSystemInfoOGLExt");
 	LinearLayout *oglExtensions = new LinearLayout(ORIENT_VERTICAL);
 	oglExtensions->SetSpacing(0);
 	oglExtensionsScroll->Add(oglExtensions);
 
-	tabHolder->AddTab("OGL Extensions", oglExtensionsScroll);
+	if (g_Config.iGPUBackend == GPU_BACKEND_OPENGL) {
+		tabHolder->AddTab("OGL Extensions", oglExtensionsScroll);
 
-	if (!gl_extensions.IsGLES) {
-		oglExtensions->Add(new ItemHeader("OpenGL Extensions"));
-	} else if (gl_extensions.GLES3) {
-		oglExtensions->Add(new ItemHeader("OpenGL ES 3.0 Extensions"));
-	} else {
-		oglExtensions->Add(new ItemHeader("OpenGL ES 2.0 Extensions"));
-	}
-
-	exts.clear();
-	SplitString(g_all_gl_extensions, ' ', exts);
-	std::sort(exts.begin(), exts.end());
-	for (size_t i = 0; i < exts.size(); i++) {
-		oglExtensions->Add(new TextView(exts[i]))->SetFocusable(true);
-	}
-
-	exts.clear();
-	SplitString(g_all_egl_extensions, ' ', exts);
-	std::sort(exts.begin(), exts.end());
-
-	// If there aren't any EGL extensions, no need to show the tab.
-	if (exts.size() > 0) {
-		ViewGroup *eglExtensionsScroll = new ScrollView(ORIENT_VERTICAL, new LinearLayoutParams(FILL_PARENT, FILL_PARENT));
-		LinearLayout *eglExtensions = new LinearLayout(ORIENT_VERTICAL);
-		eglExtensions->SetSpacing(0);
-		eglExtensionsScroll->Add(eglExtensions);
-
-		tabHolder->AddTab("EGL Extensions", eglExtensionsScroll);
-
-		eglExtensions->Add(new ItemHeader("EGL Extensions"));
-
+		if (!gl_extensions.IsGLES) {
+			oglExtensions->Add(new ItemHeader("OpenGL Extensions"));
+		} else if (gl_extensions.GLES3) {
+			oglExtensions->Add(new ItemHeader("OpenGL ES 3.0 Extensions"));
+		} else {
+			oglExtensions->Add(new ItemHeader("OpenGL ES 2.0 Extensions"));
+		}
+		exts.clear();
+		SplitString(g_all_gl_extensions, ' ', exts);
+		std::sort(exts.begin(), exts.end());
 		for (size_t i = 0; i < exts.size(); i++) {
-			eglExtensions->Add(new TextView(exts[i]))->SetFocusable(true);
+			oglExtensions->Add(new TextView(exts[i]))->SetFocusable(true);
+		}
+
+		exts.clear();
+		SplitString(g_all_egl_extensions, ' ', exts);
+		std::sort(exts.begin(), exts.end());
+
+		// If there aren't any EGL extensions, no need to show the tab.
+		if (exts.size() > 0) {
+			ViewGroup *eglExtensionsScroll = new ScrollView(ORIENT_VERTICAL, new LinearLayoutParams(FILL_PARENT, FILL_PARENT));
+			eglExtensionsScroll->SetTag("DevSystemInfoEGLExt");
+			LinearLayout *eglExtensions = new LinearLayout(ORIENT_VERTICAL);
+			eglExtensions->SetSpacing(0);
+			eglExtensionsScroll->Add(eglExtensions);
+
+			tabHolder->AddTab("EGL Extensions", eglExtensionsScroll);
+
+			eglExtensions->Add(new ItemHeader("EGL Extensions"));
+
+			for (size_t i = 0; i < exts.size(); i++) {
+				eglExtensions->Add(new TextView(exts[i]))->SetFocusable(true);
+			}
+		}
+	} else if (g_Config.iGPUBackend == GPU_BACKEND_VULKAN) {
+		tabHolder->AddTab("Vulkan Features", oglExtensionsScroll);
+
+		oglExtensions->Add(new ItemHeader("Vulkan Features"));
+		std::vector<std::string> features = thin3d->GetFeatureList();
+		for (auto &feature : features) {
+			oglExtensions->Add(new TextView(feature))->SetFocusable(true);
 		}
 	}
 }
@@ -560,10 +580,12 @@ void JitCompareScreen::CreateViews() {
 
 	ScrollView *midColumnScroll = root_->Add(new ScrollView(ORIENT_VERTICAL, new LinearLayoutParams(2.0f)));
 	LinearLayout *midColumn = midColumnScroll->Add(new LinearLayout(ORIENT_VERTICAL));
+	midColumn->SetTag("JitCompareLeftDisasm");
 	leftDisasm_ = midColumn->Add(new LinearLayout(ORIENT_VERTICAL));
 	leftDisasm_->SetSpacing(0.0f);
 
 	ScrollView *rightColumnScroll = root_->Add(new ScrollView(ORIENT_VERTICAL, new LinearLayoutParams(2.0f)));
+	rightColumnScroll->SetTag("JitCompareRightDisasm");
 	LinearLayout *rightColumn = rightColumnScroll->Add(new LinearLayout(ORIENT_VERTICAL));
 	rightDisasm_ = rightColumn->Add(new LinearLayout(ORIENT_VERTICAL));
 	rightDisasm_->SetSpacing(0.0f);
@@ -647,6 +669,8 @@ UI::EventReturn JitCompareScreen::OnAddressChange(UI::EventParams &e) {
 		return UI::EVENT_DONE;
 	}
 	JitBlockCache *blockCache = MIPSComp::jit->GetBlockCache();
+	if (!blockCache)
+		return UI::EVENT_DONE;
 	u32 addr;
 	if (blockAddr_->GetText().size() > 8)
 		return UI::EVENT_DONE;
@@ -709,6 +733,9 @@ UI::EventReturn JitCompareScreen::OnBlockAddress(UI::EventParams &e) {
 	}
 
 	JitBlockCache *blockCache = MIPSComp::jit->GetBlockCache();
+	if (!blockCache)
+		return UI::EVENT_DONE;
+
 	if (Memory::IsValidAddress(e.a)) {
 		currentBlock_ = blockCache->GetBlockNumberFromStartAddress(e.a);
 	} else {
@@ -724,6 +751,9 @@ UI::EventReturn JitCompareScreen::OnRandomBlock(UI::EventParams &e) {
 	}
 
 	JitBlockCache *blockCache = MIPSComp::jit->GetBlockCache();
+	if (!blockCache)
+		return UI::EVENT_DONE;
+
 	int numBlocks = blockCache->GetNumBlocks();
 	if (numBlocks > 0) {
 		currentBlock_ = rand() % numBlocks;
@@ -747,6 +777,9 @@ void JitCompareScreen::OnRandomBlock(int flag) {
 		return;
 	}
 	JitBlockCache *blockCache = MIPSComp::jit->GetBlockCache();
+	if (!blockCache)
+		return;
+
 	int numBlocks = blockCache->GetNumBlocks();
 	if (numBlocks > 0) {
 		bool anyWanted = false;
@@ -775,6 +808,8 @@ UI::EventReturn JitCompareScreen::OnCurrentBlock(UI::EventParams &e) {
 		return UI::EVENT_DONE;
 	}
 	JitBlockCache *blockCache = MIPSComp::jit->GetBlockCache();
+	if (!blockCache)
+		return UI::EVENT_DONE;
 	std::vector<int> blockNum;
 	blockCache->GetBlockNumbersFromAddress(currentMIPS->pc, &blockNum);
 	if (blockNum.size() > 0) {
@@ -812,6 +847,7 @@ void ShaderListScreen::CreateViews() {
 	root_ = layout;
 
 	tabs_ = new TabHolder(ORIENT_HORIZONTAL, 40, new LinearLayoutParams(1.0));
+	tabs_->SetTag("DevShaderList");
 	layout->Add(tabs_);
 	layout->Add(new Button(di->T("Back")))->OnClick.Handle<UIScreen>(this, &UIScreen::OnBack);
 
@@ -843,6 +879,7 @@ void ShaderViewScreen::CreateViews() {
 	layout->Add(new TextView(gpu->DebugGetShaderString(id_, type_, SHADER_STRING_SHORT_DESC)));
 
 	ScrollView *scroll = new ScrollView(ORIENT_VERTICAL, new LinearLayoutParams(1.0));
+	scroll->SetTag("DevShaderView");
 	layout->Add(scroll);
 
 	LinearLayout *lineLayout = new LinearLayout(ORIENT_VERTICAL, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT));

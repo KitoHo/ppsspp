@@ -22,24 +22,25 @@
 #include <map>
 #include "helper/global.h"
 #include "base/logging.h"
+#include "i18n/i18n.h"
 #include "math/lin/matrix4x4.h"
 #include "math/math_util.h"
 #include "util/text/utf8.h"
 
 #include "Common/Common.h"
 #include "Core/Config.h"
+#include "Core/Host.h"
 #include "Core/Reporting.h"
 #include "GPU/Math3D.h"
 #include "GPU/GPUState.h"
 #include "GPU/ge_constants.h"
 #include "GPU/Directx9/ShaderManagerDX9.h"
-#include "GPU/Directx9/TransformPipelineDX9.h"
+#include "GPU/Directx9/DrawEngineDX9.h"
 #include "GPU/Directx9/FramebufferDX9.h"
-#include "UI/OnScreenDisplay.h"
 
 namespace DX9 {
 
-PSShader::PSShader(ShaderID id, const char *code, bool useHWTransform) : id_(id), shader(nullptr), failed_(false), useHWTransform_(useHWTransform) {
+PSShader::PSShader(ShaderID id, const char *code) : id_(id), shader(nullptr), failed_(false) {
 	source_ = code;
 #ifdef SHADERLOG
 	OutputDebugString(ConvertUTF8ToWString(code).c_str());
@@ -90,7 +91,7 @@ std::string PSShader::GetShaderString(DebugShaderStringType type) const {
 	}
 }
 
-VSShader::VSShader(ShaderID id, const char *code, int vertType, bool useHWTransform) : id_(id), shader(nullptr), failed_(false), useHWTransform_(useHWTransform) {
+VSShader::VSShader(ShaderID id, const char *code, bool useHWTransform) : id_(id), shader(nullptr), failed_(false), useHWTransform_(useHWTransform) {
 	source_ = code;
 #ifdef SHADERLOG
 	OutputDebugString(ConvertUTF8ToWString(code).c_str());
@@ -248,7 +249,7 @@ void ShaderManagerDX9::VSSetMatrix(int creg, const float* pMatrix) {
 }
 
 // Depth in ogl is between -1;1 we need between 0;1 and optionally reverse it
-static void ConvertProjMatrixToD3D(Matrix4x4 &in, bool invertedX, bool invertedY, bool invertedZ) {
+static void ConvertProjMatrixToD3D(Matrix4x4 &in, bool invertedX, bool invertedY) {
 	// Half pixel offset hack
 	float xoff = 0.5f / gstate_c.curRTRenderWidth;
 	xoff = gstate_c.vpXOffset + (invertedX ? xoff : -xoff);
@@ -260,7 +261,9 @@ static void ConvertProjMatrixToD3D(Matrix4x4 &in, bool invertedX, bool invertedY
 	if (invertedY)
 		yoff = -yoff;
 
-	in.translateAndScale(Vec3(xoff, yoff, 0.5f), Vec3(gstate_c.vpWidthScale, gstate_c.vpHeightScale, invertedZ ? -0.5 : 0.5f));
+	const Vec3 trans(xoff, yoff, gstate_c.vpZOffset * 0.5f + 0.5f);
+	const Vec3 scale(gstate_c.vpWidthScale, gstate_c.vpHeightScale, gstate_c.vpDepthScale * 0.5f);
+	in.translateAndScale(trans, scale);
 }
 
 static void ConvertProjMatrixToD3DThrough(Matrix4x4 &in) {
@@ -342,40 +345,7 @@ void ShaderManagerDX9::VSUpdateUniforms(int dirtyUniforms) {
 			flippedMatrix[12] = -flippedMatrix[12];
 		}
 
-		// In Phantasy Star Portable 2, depth range sometimes goes negative and is clamped by glDepthRange to 0,
-		// causing graphics clipping glitch (issue #1788). This hack modifies the projection matrix to work around it.
-		if (gstate_c.Supports(GPU_USE_DEPTH_RANGE_HACK)) {
-			float zScale = gstate.getViewportZScale() / 65535.0f;
-			float zCenter = gstate.getViewportZCenter() / 65535.0f;
-
-			// if far depth range < 0
-			if (zCenter + zScale < 0.0f) {
-				// if perspective projection
-				if (flippedMatrix[11] < 0.0f) {
-					float depthMax = gstate.getDepthRangeMax() / 65535.0f;
-					float depthMin = gstate.getDepthRangeMin() / 65535.0f;
-
-					float a = flippedMatrix[10];
-					float b = flippedMatrix[14];
-
-					float n = b / (a - 1.0f);
-					float f = b / (a + 1.0f);
-
-					f = (n * f) / (n + ((zCenter + zScale) * (n - f) / (depthMax - depthMin)));
-
-					a = (n + f) / (n - f);
-					b = (2.0f * n * f) / (n - f);
-
-					if (!my_isnan(a) && !my_isnan(b)) {
-						flippedMatrix[10] = a;
-						flippedMatrix[14] = b;
-					}
-				}
-			}
-		}
-
-		const bool invertedZ = gstate_c.vpDepth < 0;
-		ConvertProjMatrixToD3D(flippedMatrix, invertedX, invertedY, invertedZ);
+		ConvertProjMatrixToD3D(flippedMatrix, invertedX, invertedY);
 
 		VSSetMatrix(CONST_VS_PROJ, flippedMatrix.getReadPtr());
 	}
@@ -435,12 +405,12 @@ void ShaderManagerDX9::VSUpdateUniforms(int dirtyUniforms) {
 		}
 		if (allDirty) {
 			// Set them all with one call
-			glUniformMatrix4fv(u_bone, numBones, GL_FALSE, allBones);
+			//glUniformMatrix4fv(u_bone, numBones, GL_FALSE, allBones);
 		} else {
 			// Set them one by one. Could try to coalesce two in a row etc but too lazy.
 			for (int i = 0; i < numBones; i++) {
 				if (dirtyUniforms & (DIRTY_BONEMATRIX0 << i)) {
-					glUniformMatrix4fv(u_bone + i, 1, GL_FALSE, allBones + 16 * i);
+					//glUniformMatrix4fv(u_bone + i, 1, GL_FALSE, allBones + 16 * i);
 				}
 			}
 		}
@@ -469,7 +439,6 @@ void ShaderManagerDX9::VSUpdateUniforms(int dirtyUniforms) {
 			// Not sure what GE_TEXMAP_UNKNOWN is, but seen in Riviera.  Treating the same as GE_TEXMAP_TEXTURE_COORDS works.
 		case GE_TEXMAP_UNKNOWN:
 			if (g_Config.bPrescaleUV) {
-				// Shouldn't even get here as we won't use the uniform in the shader.
 				// We are here but are prescaling UV in the decoder? Let's do the same as in the other case
 				// except consider *Scale and *Off to be 1 and 0.
 				uvscaleoff[0] = widthFactor;
@@ -512,20 +481,18 @@ void ShaderManagerDX9::VSUpdateUniforms(int dirtyUniforms) {
 	}
 
 	if (dirtyUniforms & DIRTY_DEPTHRANGE)	{
-		float viewZScale = gstate.getViewportZScale();
-		float viewZCenter = gstate.getViewportZCenter();
+		// Depth is [0, 1] mapping to [minz, maxz], not too hard.
+		float vpZScale = gstate.getViewportZScale();
+		float vpZCenter = gstate.getViewportZCenter();
 
-		// Given the way we do the rounding, the integer part of the offset is probably mostly irrelevant as we cancel
-		// it afterwards anyway.
-		// It seems that we should adjust for D3D projection matrix. We got squashed up to only 0-1, so we divide
-		// the scale factor by 2, and add an offset. But, this doesn't work! I get near-perfect results not doing it.
-		// viewZScale *= 2.0f;
-
-		// Need to take the possibly inverted proj matrix into account.
-		if (gstate_c.vpDepth < 0.0)
-			viewZScale *= -1.0f;
-		viewZCenter -= 32767.5f;
+		// These are just the reverse of the formulas in GPUStateUtils.
+		float halfActualZRange = vpZScale / gstate_c.vpDepthScale;
+		float minz = -((gstate_c.vpZOffset * halfActualZRange) - vpZCenter) - halfActualZRange;
+		float viewZScale = halfActualZRange * 2.0f;
+		// Account for the half pixel offset.
+		float viewZCenter = minz + (DepthSliceFactor() / 256.0f) * 0.5f;
 		float viewZInvScale;
+
 		if (viewZScale != 0.0) {
 			viewZInvScale = 1.0f / viewZScale;
 		} else {
@@ -621,14 +588,13 @@ void ShaderManagerDX9::DirtyLastShader() { // disables vertex arrays
 	lastPShader_ = nullptr;
 }
 
-
 VSShader *ShaderManagerDX9::ApplyShader(int prim, u32 vertType) {
 	bool useHWTransform = CanUseHardwareTransform(prim);
 
 	ShaderID VSID;
 	ComputeVertexShaderID(&VSID, vertType, useHWTransform);
 	ShaderID FSID;
-	ComputeFragmentShaderID(&FSID, vertType);
+	ComputeFragmentShaderID(&FSID);
 
 	// Just update uniforms if this is the same shader as last time.
 	if (lastVShader_ != nullptr && lastPShader_ != nullptr && VSID == lastVSID_ && FSID == lastFSID_) {
@@ -645,11 +611,12 @@ VSShader *ShaderManagerDX9::ApplyShader(int prim, u32 vertType) {
 	if (vsIter == vsCache_.end())	{
 		// Vertex shader not in cache. Let's compile it.
 		GenerateVertexShaderDX9(VSID, codeBuffer_);
-		vs = new VSShader(VSID, codeBuffer_, vertType, useHWTransform);
+		vs = new VSShader(VSID, codeBuffer_, useHWTransform);
 
 		if (vs->Failed()) {
+			I18NCategory *gr = GetI18NCategory("Graphics");
 			ERROR_LOG(HLE, "Shader compilation failed, falling back to software transform");
-			osm.Show("hardware transform error - falling back to software", 2.5f, 0xFF3030FF, -1, true);
+			host->NotifyUserMessage(gr->T("hardware transform error - falling back to software"), 2.5f, 0xFF3030FF);
 			delete vs;
 
 			ComputeVertexShaderID(&VSID, vertType, false);
@@ -660,7 +627,7 @@ VSShader *ShaderManagerDX9::ApplyShader(int prim, u32 vertType) {
 
 			// Can still work with software transform.
 			GenerateVertexShaderDX9(VSID, codeBuffer_);
-			vs = new VSShader(VSID, codeBuffer_, vertType, false);
+			vs = new VSShader(VSID, codeBuffer_, false);
 		}
 
 		vsCache_[VSID] = vs;
@@ -674,7 +641,7 @@ VSShader *ShaderManagerDX9::ApplyShader(int prim, u32 vertType) {
 	if (fsIter == fsCache_.end())	{
 		// Fragment shader not in cache. Let's compile it.
 		GenerateFragmentShaderDX9(FSID, codeBuffer_);
-		fs = new PSShader(FSID, codeBuffer_, useHWTransform);
+		fs = new PSShader(FSID, codeBuffer_);
 		fsCache_[FSID] = fs;
 	} else {
 		fs = fsIter->second;

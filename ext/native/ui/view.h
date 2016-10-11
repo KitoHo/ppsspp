@@ -9,6 +9,7 @@
 
 #include <string>
 #include <vector>
+#include <map>
 #include <cmath>
 #include <cstdio>
 #include <memory>
@@ -203,9 +204,15 @@ enum FocusFlags {
 	FF_GOTFOCUS = 2
 };
 
-class ViewGroup;
+enum PersistStatus {
+	PERSIST_SAVE,
+	PERSIST_RESTORE,
+};
 
-void Fill(UIContext &dc, const Bounds &bounds, const Drawable &drawable);
+typedef std::vector<int> PersistBuffer;
+typedef std::map<std::string, UI::PersistBuffer> PersistMap;
+
+class ViewGroup;
 
 struct MeasureSpec {
 	MeasureSpec(MeasureSpecType t, float s = 0.0f) : type(t), size(s) {}
@@ -266,10 +273,36 @@ struct Margins {
 	Margins(int8_t horiz, int8_t vert) : top(vert), bottom(vert), left(horiz), right(horiz) {}
 	Margins(int8_t l, int8_t t, int8_t r, int8_t b) : top(t), bottom(b), left(l), right(r) {}
 
+	int horiz() const {
+		return left + right;
+	}
+	int vert() const {
+		return top + bottom;
+	}
+
 	int8_t top;
 	int8_t bottom;
 	int8_t left;
 	int8_t right;
+};
+
+struct Padding {
+	Padding() : top(0), bottom(0), left(0), right(0) {}
+	explicit Padding(float all) : top(all), bottom(all), left(all), right(all) {}
+	Padding(float horiz, float vert) : top(vert), bottom(vert), left(horiz), right(horiz) {}
+	Padding(float l, float t, float r, float b) : top(t), bottom(b), left(l), right(r) {}
+
+	float horiz() const {
+		return left + right;
+	}
+	float vert() const {
+		return top + bottom;
+	}
+
+	float top;
+	float bottom;
+	float left;
+	float right;
 };
 
 enum LayoutParamsType {
@@ -291,6 +324,26 @@ public:
 
 	// Fake RTTI
 	bool Is(LayoutParamsType type) const { return type_ == type; }
+
+	template <typename T>
+	T *As() {
+		if (Is(T::StaticType())) {
+			return static_cast<T *>(this);
+		}
+		return nullptr;
+	}
+
+	template <typename T>
+	const T *As() const {
+		if (Is(T::StaticType())) {
+			return static_cast<const T *>(this);
+		}
+		return nullptr;
+	}
+
+	static LayoutParamsType StaticType() {
+		return LP_PLAIN;
+	}
 
 private:
 	LayoutParamsType type_;
@@ -319,6 +372,7 @@ public:
 	virtual std::string Describe() const;
 
 	virtual void FocusChanged(int focusFlags) {}
+	virtual void PersistData(PersistStatus status, std::string anonId, PersistMap &storage);
 
 	void Move(Bounds bounds) {
 		bounds_ = bounds;
@@ -334,6 +388,7 @@ public:
 
 	// Override this for easy standard behaviour. No need to override Measure.
 	virtual void GetContentDimensions(const UIContext &dc, float &w, float &h) const;
+	virtual void GetContentDimensionsBySpec(const UIContext &dc, MeasureSpec horiz, MeasureSpec vert, float &w, float &h) const;
 
 	// Called when the layout is done.
 	void SetBounds(Bounds bounds) { bounds_ = bounds; }
@@ -360,7 +415,7 @@ public:
 	void SetEnabledPtr(bool *enabled) { enabledPtr_ = enabled; enabledMeansDisabled_ = false; }
 	void SetDisabledPtr(bool *disabled) { enabledPtr_ = disabled; enabledMeansDisabled_ = true;  }
 
-	void SetVisibility(Visibility visibility) { visibility_ = visibility; }
+	virtual void SetVisibility(Visibility visibility) { visibility_ = visibility; }
 	Visibility GetVisibility() const { return visibility_; }
 
 	const std::string &Tag() const { return tag_; }
@@ -454,15 +509,16 @@ private:
 class Slider : public Clickable {
 public:
 	Slider(int *value, int minValue, int maxValue, LayoutParams *layoutParams = 0)
-		: Clickable(layoutParams), value_(value), showPercent_(false), minValue_(minValue), maxValue_(maxValue), paddingLeft_(5), paddingRight_(70), step_(1) {}
+		: Clickable(layoutParams), value_(value), showPercent_(false), minValue_(minValue), maxValue_(maxValue), paddingLeft_(5), paddingRight_(70), step_(1), repeat_(-1) {}
 
 	Slider(int *value, int minValue, int maxValue, int step = 1, LayoutParams *layoutParams = 0)
-		: Clickable(layoutParams), value_(value), showPercent_(false), minValue_(minValue), maxValue_(maxValue), paddingLeft_(5), paddingRight_(70) {
+		: Clickable(layoutParams), value_(value), showPercent_(false), minValue_(minValue), maxValue_(maxValue), paddingLeft_(5), paddingRight_(70), repeat_(-1) {
 		step_ = step <= 0 ? 1 : step;
 	}
 	void Draw(UIContext &dc) override;
 	bool Key(const KeyInput &input) override;
 	void Touch(const TouchInput &input) override;
+	void Update(const InputState &input_state) override;
 	void GetContentDimensions(const UIContext &dc, float &w, float &h) const override;
 	void SetShowPercent(bool s) { showPercent_ = s; }
 
@@ -472,6 +528,8 @@ public:
 	Event OnChange;
 
 private:
+	bool ApplyKey(int keyCode);
+
 	int *value_;
 	bool showPercent_;
 	int minValue_;
@@ -479,15 +537,18 @@ private:
 	float paddingLeft_;
 	float paddingRight_;
 	int step_;
+	int repeat_;
+	int repeatCode_;
 };
 
 class SliderFloat : public Clickable {
 public:
 	SliderFloat(float *value, float minValue, float maxValue, LayoutParams *layoutParams = 0)
-		: Clickable(layoutParams), value_(value), minValue_(minValue), maxValue_(maxValue), paddingLeft_(5), paddingRight_(70) {}
+		: Clickable(layoutParams), value_(value), minValue_(minValue), maxValue_(maxValue), paddingLeft_(5), paddingRight_(70), repeat_(-1) {}
 	void Draw(UIContext &dc) override;
 	bool Key(const KeyInput &input) override;
 	void Touch(const TouchInput &input) override;
+	void Update(const InputState &input_state) override;
 	void GetContentDimensions(const UIContext &dc, float &w, float &h) const override;
 
 	// OK to call this from the outside after having modified *value_
@@ -496,11 +557,15 @@ public:
 	Event OnChange;
 
 private:
+	bool ApplyKey(int keyCode);
+
 	float *value_;
 	float minValue_;
 	float maxValue_;
 	float paddingLeft_;
 	float paddingRight_;
+	int repeat_;
+	int repeatCode_;
 };
 
 // Basic button that modifies a bitfield based on the pressed status. Supports multitouch.
@@ -554,7 +619,7 @@ public:
 		: ClickableItem(layoutParams), atlasImage_(image), iconImage_(-1), centered_(false), highlighted_(false), selected_(false) {}
 
 	virtual void HighlightChanged(bool highlighted);
-	void GetContentDimensions(const UIContext &dc, float &w, float &h) const override;
+	void GetContentDimensionsBySpec(const UIContext &dc, MeasureSpec horiz, MeasureSpec vert, float &w, float &h) const override;
 	void Draw(UIContext &dc) override;
 	virtual void SetCentered(bool c) {
 		centered_ = c;
@@ -566,12 +631,13 @@ public:
 protected:
 	// hackery
 	virtual bool IsSticky() const { return false; }
+	virtual float CalculateTextScale(const UIContext &dc, float availWidth) const;
 
-	int height_;
 	std::string text_;
 	std::string smallText_;
 	ImageID atlasImage_;
 	ImageID iconImage_;  // Only applies for text, non-centered
+	Padding textPadding_;
 	bool centered_;
 	bool highlighted_;
 
@@ -654,11 +720,14 @@ public:
 	}
 
 	void Draw(UIContext &dc) override;
+	void GetContentDimensions(const UIContext &dc, float &w, float &h) const override;
 
 	EventReturn OnClicked(EventParams &e);
 	//allow external agents to toggle the checkbox
 	void Toggle();
 private:
+	float CalculateTextScale(const UIContext &dc, float availWidth) const;
+
 	bool *toggle_;
 	std::string text_;
 	std::string smallText_;
@@ -688,7 +757,7 @@ public:
 	TextView(const std::string &text, int textAlign, bool small, LayoutParams *layoutParams = 0)
 		: InertView(layoutParams), text_(text), textAlign_(textAlign), textColor_(0xFFFFFFFF), small_(small), shadow_(false), focusable_(false), clip_(true) {}
 
-	void GetContentDimensions(const UIContext &dc, float &w, float &h) const override;
+	void GetContentDimensionsBySpec(const UIContext &dc, MeasureSpec horiz, MeasureSpec vert, float &w, float &h) const override;
 	void Draw(UIContext &dc) override;
 
 	void SetText(const std::string &text) { text_ = text; }

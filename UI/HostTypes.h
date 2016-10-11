@@ -18,6 +18,7 @@
 #pragma once
 
 #include "Core/Host.h"
+#include "UI/OnScreenDisplay.h"
 
 #if !defined(MOBILE_DEVICE) && defined(USING_QT_UI)
 #include "Core/Debugger/SymbolMap.h"
@@ -37,7 +38,7 @@ public:
 
 	void SetDebugMode(bool mode) override { }
 
-	bool InitGraphics(std::string *error_message) override { return true; }
+	bool InitGraphics(std::string *error_message, GraphicsContext **ctx) override { return true; }
 	void ShutdownGraphics() override {}
 
 	void InitSound() override;
@@ -50,6 +51,10 @@ public:
 	bool IsDebuggingEnabled() override {return false;}
 	bool AttemptLoadSymbolMap() override {return false;}
 	void SetWindowTitle(const char *message) override {}
+
+	void NotifyUserMessage(const std::string &message, float duration = 1.0f, u32 color = 0x00FFFFFF, const char *id = nullptr) override {
+		osm.Show(message, duration, color, -1, true, id);
+	}
 };
 
 #if !defined(MOBILE_DEVICE) && defined(USING_QT_UI)
@@ -93,7 +98,7 @@ public:
 			mainWindow->GetDialogDisasm()->SetDebugMode(mode);
 	}
 
-	virtual bool InitGraphics(std::string *error_message) override { return true; }
+	virtual bool InitGraphics(std::string *error_message, GraphicsContext **ctx) override { return true; }
 	virtual void ShutdownGraphics() override {}
 
 	virtual void InitSound() override;
@@ -126,6 +131,11 @@ public:
 
 		mainWindow->setWindowTitle(title);
 	}
+
+	void NotifyUserMessage(const std::string &message, float duration = 1.0f, u32 color = 0x00FFFFFF, const char *id = nullptr) override {
+		osm.Show(message, duration, color, -1, true, id);
+	}
+
 	bool GPUDebuggingActive()
 	{
 		auto dialogDisplayList = mainWindow->GetDialogDisplaylist();

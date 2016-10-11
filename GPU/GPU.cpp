@@ -15,11 +15,15 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
+#include "Common/GraphicsContext.h"
 #include "Core/Core.h"
 
 #include "GPU/GPU.h"
 #include "GPU/GPUInterface.h"
-#include "GPU/GLES/GLES_GPU.h"
+#include "GPU/GLES/GPU_GLES.h"
+#ifndef NO_VULKAN
+#include "GPU/Vulkan/GPU_Vulkan.h"
+#endif
 #include "GPU/Null/NullGpu.h"
 #include "GPU/Software/SoftGpu.h"
 
@@ -38,61 +42,47 @@ static void SetGPU(T *obj) {
 	gpuDebug = obj;
 }
 
-bool GPU_Init() {
+#ifdef USE_CRT_DBG
+#undef new
+#endif
+
+bool GPU_Init(GraphicsContext *ctx, Thin3DContext *thin3d) {
 	switch (PSP_CoreParameter().gpuCore) {
-	case GPU_NULL:
+	case GPUCORE_NULL:
 		SetGPU(new NullGPU());
 		break;
-	case GPU_GLES:
-		SetGPU(new GLES_GPU());
+	case GPUCORE_GLES:
+		SetGPU(new GPU_GLES(ctx));
 		break;
-	case GPU_SOFTWARE:
-		SetGPU(new SoftGPU());
+	case GPUCORE_SOFTWARE:
+		SetGPU(new SoftGPU(ctx, thin3d));
 		break;
-	case GPU_DIRECTX9:
+	case GPUCORE_DIRECTX9:
 #if defined(_WIN32)
-		SetGPU(new DIRECTX9_GPU());
+		SetGPU(new DIRECTX9_GPU(ctx));
+#endif
+		break;
+	case GPUCORE_DIRECTX11:
+		return false;
+	case GPUCORE_VULKAN:
+#ifndef NO_VULKAN
+		if (!ctx) {
+			ERROR_LOG(G3D, "Unable to init Vulkan GPU backend, no context");
+			break;
+		}
+		SetGPU(new GPU_Vulkan(ctx));
 #endif
 		break;
 	}
 
 	return gpu != NULL;
 }
+#ifdef USE_CRT_DBG
+#define new DBG_NEW
+#endif
 
 void GPU_Shutdown() {
 	delete gpu;
 	gpu = 0;
 	gpuDebug = 0;
-}
-
-void GPU_Reinitialize() {
-	if (gpu) {
-		gpu->Reinitialize();
-	}
-}
-
-void InitGfxState() {
-	memset(&gstate, 0, sizeof(gstate));
-	memset(&gstate_c, 0, sizeof(gstate_c));
-	for (int i = 0; i < 256; i++) {
-		gstate.cmdmem[i] = i << 24;
-	}
-
-	// Lighting is not enabled by default, matrices are zero initialized.
-	memset(gstate.worldMatrix, 0, sizeof(gstate.worldMatrix));
-	memset(gstate.viewMatrix, 0, sizeof(gstate.viewMatrix));
-	memset(gstate.projMatrix, 0, sizeof(gstate.projMatrix));
-	memset(gstate.tgenMatrix, 0, sizeof(gstate.tgenMatrix));
-	memset(gstate.boneMatrix, 0, sizeof(gstate.boneMatrix));
-}
-
-void ShutdownGfxState() {
-}
-
-// When you have changed state outside the psp gfx core,
-// or saved the context and has reloaded it, call this function.
-void ReapplyGfxState() {
-	if (!gpu)
-		return;
-	gpu->ReapplyGfxState();
 }

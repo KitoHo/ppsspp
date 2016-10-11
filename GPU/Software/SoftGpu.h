@@ -45,10 +45,12 @@ typedef struct {
 } FormatBuffer;
 
 class ShaderManager;
+class Thin3DContext;
+class Thin3DTexture;
 
 class SoftGPU : public GPUCommon {
 public:
-	SoftGPU();
+	SoftGPU(GraphicsContext *gfxCtx, Thin3DContext *_thin3D);
 	~SoftGPU();
 	void InitClear() override {}
 	void ExecuteOp(u32 op, u32 diff) override;
@@ -56,8 +58,9 @@ public:
 	void BeginFrame() override {}
 	void SetDisplayFramebuffer(u32 framebuf, u32 stride, GEBufferFormat format) override;
 	void CopyDisplayToOutput() override;
-	void UpdateStats() override;
+	void GetStats(char *buffer, size_t bufsize) override;
 	void InvalidateCache(u32 addr, int size, GPUInvalidationType type) override;
+	void NotifyVideoUpload(u32 addr, int size, int width, int format) override;
 	bool PerformMemoryCopy(u32 dest, u32 src, int size) override;
 	bool PerformMemorySet(u32 dest, u8 v, int size) override;
 	bool PerformMemoryDownload(u32 dest, int size) override;
@@ -65,7 +68,8 @@ public:
 	bool PerformStencilUpload(u32 dest, int size) override;
 	void ClearCacheNextFrame() override {}
 
-	void DeviceLost() override {}
+	void DeviceLost() override;
+	void DeviceRestore() override;
 	void DumpNextFrame() override {}
 
 	void Resized() override {}
@@ -80,10 +84,11 @@ public:
 		return !(gstate_c.skipDrawReason & SKIPDRAW_SKIPFRAME);
 	}
 
-	bool GetCurrentFramebuffer(GPUDebugBuffer &buffer) override;
+	bool GetCurrentFramebuffer(GPUDebugBuffer &buffer, GPUDebugFramebufferType type, int maxRes = -1) override;
 	bool GetCurrentDepthbuffer(GPUDebugBuffer &buffer) override;
 	bool GetCurrentStencilbuffer(GPUDebugBuffer &buffer) override;
 	bool GetCurrentTexture(GPUDebugBuffer &buffer, int level) override;
+	bool GetCurrentClut(GPUDebugBuffer &buffer) override;
 	bool GetCurrentSimpleVertices(int count, std::vector<GPUDebugVertex> &vertices, std::vector<u16> &indices) override;
 
 protected:
@@ -98,4 +103,9 @@ private:
 	u32 displayFramebuf_;
 	u32 displayStride_;
 	GEBufferFormat displayFormat_;
+
+	GraphicsContext *gfxCtx_;
+	Thin3DTexture *fbTex;
+	Thin3DContext *thin3d;
+	std::vector<u32> fbTexBuffer;
 };

@@ -236,13 +236,13 @@ bool GameManager::InstallGame(std::string zipfile, bool deleteAfter) {
 			}
 
 			zip_file *zf = zip_fopen_index(z, i, 0);
-			FILE *f = fopen(outFilename.c_str(), "wb");
+			FILE *f = File::OpenCFile(outFilename, "wb");
 			if (f) {
 				size_t pos = 0;
 				const size_t blockSize = 1024 * 128;
 				u8 *buffer = new u8[blockSize];
 				while (pos < size) {
-					size_t bs = std::min(blockSize, pos - size);
+					size_t bs = std::min(blockSize, size - pos);
 					zip_fread(zf, buffer, bs);
 					size_t written = fwrite(buffer, 1, bs, f);
 					if (written != bs) {

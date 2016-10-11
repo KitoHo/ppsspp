@@ -39,7 +39,7 @@ MainWindow::MainWindow(QWidget *parent, bool fullscreen) :
 	createMenus();
 	updateMenus();
 
-	SetZoom(g_Config.iInternalResolution);
+	SetWindowScale(-1);
 	
 	if(fullscreen)
 	  fullscrAct();
@@ -83,7 +83,20 @@ void MainWindow::updateMenus()
 	}
 
 	foreach(QAction * action, screenGroup->actions()) {
-		if (g_Config.iInternalResolution == action->data().toInt()) {
+		int width = (g_Config.IsPortrait() ? 272 : 480) * action->data().toInt();
+		int height = (g_Config.IsPortrait() ? 480 : 272) * action->data().toInt();
+		if (g_Config.iWindowWidth == width && g_Config.iWindowHeight == height) {
+			action->setChecked(true);
+			break;
+		}
+	}
+
+	foreach(QAction * action, displayLayoutGroup->actions()) {
+		if (g_Config.iSmallDisplayZoomType == action->data().toInt()) {
+
+			if (gpu)
+				gpu->Resized();
+
 			action->setChecked(true);
 			break;
 		}
@@ -165,7 +178,7 @@ void MainWindow::closeAct()
 	SetGameTitle("");
 }
 
-void SaveStateActionFinished(bool result, void *userdata)
+void SaveStateActionFinished(bool result, const std::string &message, void *userdata)
 {
 	// TODO: Improve messaging?
 	if (!result)
@@ -334,13 +347,6 @@ void MainWindow::memviewTexAct()
 		memoryTexWindow->show();
 }
 
-void MainWindow::stretchAct()
-{
-	g_Config.bStretchToDisplay = !g_Config.bStretchToDisplay;
-	if (gpu)
-		gpu->Resized();
-}
-
 void MainWindow::raiseTopMost()
 {
 	
@@ -358,7 +364,7 @@ void MainWindow::fullscrAct()
 		updateMenus();
 
 		showNormal();
-		SetZoom(g_Config.iInternalResolution);
+		SetWindowScale(-1);
 		InitPadLayout(dp_xres, dp_yres);
 		if (GetUIState() == UISTATE_INGAME && QApplication::overrideCursor())
 			QApplication::restoreOverrideCursor();
@@ -410,18 +416,35 @@ void MainWindow::aboutAct()
 }
 
 /* Private functions */
-void MainWindow::SetZoom(int zoom) {
+void MainWindow::SetWindowScale(int zoom) {
 	if (isFullScreen())
 		fullscrAct();
-	if (zoom < 1) zoom = 1;
-	if (zoom > 4) zoom = 4;
-	g_Config.iInternalResolution = zoom;
 
-	emugl->setFixedSize(480 * zoom, 272 * zoom);
+	int width, height;
+	if (zoom == -1 && (g_Config.iWindowWidth <= 0 || g_Config.iWindowHeight <= 0)) {
+		// Default to zoom level 2.
+		zoom = 2;
+	}
+	if (zoom == -1) {
+		// Take the last setting.
+		width = g_Config.iWindowWidth;
+		height = g_Config.iWindowHeight;
+	} else {
+		// Update to the specified factor.  Let's clamp first.
+		if (zoom < 1)
+			zoom = 1;
+		if (zoom > 4)
+			zoom = 4;
+
+		width = (g_Config.IsPortrait() ? 272 : 480) * zoom;
+		height = (g_Config.IsPortrait() ? 480 : 272) * zoom;
+	}
+
+	g_Config.iWindowWidth = width;
+	g_Config.iWindowHeight = height;
+
+	emugl->setFixedSize(g_Config.iWindowWidth, g_Config.iWindowHeight);
 	setFixedSize(sizeHint());
-
-	if (gpu)
-		gpu->Resized();
 }
 
 void MainWindow::SetGameTitle(QString text)
@@ -511,8 +534,6 @@ void MainWindow::createMenus()
 	MenuTree* optionsMenu = new MenuTree(this, menuBar(), QT_TR_NOOP("&Options"));
 	// - Core
 	MenuTree* coreMenu = new MenuTree(this, optionsMenu,      QT_TR_NOOP("&Core"));
-	coreMenu->add(new MenuAction(this, SLOT(dynarecAct()),        QT_TR_NOOP("&CPU Dynarec")))
-		->addEventChecked(&g_Config.bJit);
 	coreMenu->add(new MenuAction(this, SLOT(vertexDynarecAct()),  QT_TR_NOOP("&Vertex Decoder Dynarec")))
 		->addEventChecked(&g_Config.bVertexDecoderJit);
 	coreMenu->add(new MenuAction(this, SLOT(fastmemAct()),        QT_TR_NOOP("Fast &Memory (unstable)")))
@@ -539,8 +560,10 @@ void MainWindow::createMenus()
 		QList<int>()  << 1    << 2    << 3    << 4,
 		QList<int>() << Qt::CTRL + Qt::Key_1 << Qt::CTRL + Qt::Key_2 << Qt::CTRL + Qt::Key_3 << Qt::CTRL + Qt::Key_4);
 
-	videoMenu->add(new MenuAction(this, SLOT(stretchAct()),       QT_TR_NOOP("&Stretch to Display")))
-		->addEventChecked(&g_Config.bStretchToDisplay);
+	MenuTree* displayLayoutMenu = new MenuTree(this, videoMenu, QT_TR_NOOP("&Display Layout Options"));
+	displayLayoutGroup = new MenuActionGroup(this, displayLayoutMenu, SLOT(displayLayoutGroup_triggered(QAction *)),
+		QStringList() << "Stretched" << "Partialy stretched" << "Auto Scaling" << "Manual Scaling",
+		QList<int>() << 0 << 1 << 2 << 3);
 	videoMenu->addSeparator();
 	videoMenu->add(new MenuAction(this, SLOT(transformAct()),     QT_TR_NOOP("&Hardware Transform"), Qt::Key_F6))
 		->addEventChecked(&g_Config.bHardwareTransform);

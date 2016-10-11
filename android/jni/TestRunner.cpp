@@ -69,9 +69,10 @@ void RunTests()
 #endif
 
 	CoreParameter coreParam;
-	coreParam.cpuCore = g_Config.bJit ? CPU_JIT : CPU_INTERPRETER;
-	coreParam.gpuCore = g_Config.bSoftwareRendering ? GPU_SOFTWARE : GPU_GLES;
+	coreParam.cpuCore = (CPUCore)g_Config.iCpuCore;
+	coreParam.gpuCore = g_Config.bSoftwareRendering ? GPUCORE_SOFTWARE : GPUCORE_GLES;
 	coreParam.enableSound = g_Config.bEnableSound;
+	coreParam.graphicsContext = PSP_CoreParameter().graphicsContext;
 	coreParam.mountIso = "";
 	coreParam.mountRoot = baseDirectory + "pspautotests/";
 	coreParam.startPaused = false;

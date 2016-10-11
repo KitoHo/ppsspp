@@ -35,6 +35,7 @@
 #include "Core/Debugger/Breakpoints.h"
 #include "Core/Config.h"
 #include "Core/HLE/ReplaceTables.h"
+#include "Core/MIPS/JitCommon/JitBlockCache.h"
 
 namespace Memory {
 
@@ -340,7 +341,7 @@ void Init()
 
 void DoState(PointerWrap &p)
 {
-	auto s = p.Section("Memory", 1, 2);
+	auto s = p.Section("Memory", 1, 3);
 	if (!s)
 		return;
 
@@ -348,7 +349,8 @@ void DoState(PointerWrap &p)
 		if (!g_RemasterMode)
 			g_MemorySize = RAM_NORMAL_SIZE;
 		g_PSPModel = PSP_MODEL_FAT;
-	} else {
+	} else if (s == 2) {
+		// In version 2, we determine memory size based on PSP model.
 		u32 oldMemorySize = g_MemorySize;
 		p.Do(g_PSPModel);
 		p.DoMarker("PSPModel");
@@ -358,6 +360,17 @@ void DoState(PointerWrap &p)
 				Shutdown();
 				Init();
 			}
+		}
+	} else {
+		// In version 3, we started just saving the memory size directly.
+		// It's no longer based strictly on the PSP model.
+		u32 oldMemorySize = g_MemorySize;
+		p.Do(g_PSPModel);
+		p.DoMarker("PSPModel");
+		p.Do(g_MemorySize);
+		if (oldMemorySize != g_MemorySize) {
+			Shutdown();
+			Init();
 		}
 	}
 
@@ -370,24 +383,25 @@ void DoState(PointerWrap &p)
 	p.DoMarker("ScratchPad");
 }
 
-void Shutdown()
-{
+void Shutdown() {
 	lock_guard guard(g_shutdownLock);
 	u32 flags = 0;
-
 	MemoryMap_Shutdown(flags);
-	base = NULL;
+	base = nullptr;
 	DEBUG_LOG(MEMMAP, "Memory system shut down.");
 }
 
-void Clear()
-{
+void Clear() {
 	if (m_pRAM)
 		memset(GetPointerUnchecked(PSP_GetKernelMemoryBase()), 0, g_MemorySize);
 	if (m_pScratchPad)
 		memset(m_pScratchPad, 0, SCRATCHPAD_SIZE);
 	if (m_pVRAM)
 		memset(m_pVRAM, 0, VRAM_SIZE);
+}
+
+bool IsActive() {
+	return base != nullptr;
 }
 
 // Wanting to avoid include pollution, MemMap.h is included a lot.
@@ -412,27 +426,21 @@ __forceinline static Opcode Read_Instruction(u32 address, bool resolveReplacemen
 	}
 
 	if (MIPS_IS_RUNBLOCK(inst.encoding) && MIPSComp::jit) {
-		JitBlockCache *bc = MIPSComp::jit->GetBlockCache();
-		int block_num = bc->GetBlockNumberFromEmuHackOp(inst, true);
-		if (block_num >= 0) {
-			inst = bc->GetOriginalFirstOp(block_num);
-			if (resolveReplacements && MIPS_IS_REPLACEMENT(inst)) {
-				u32 op;
-				if (GetReplacedOpAt(address, &op)) {
-					if (MIPS_IS_EMUHACK(op)) {
-						ERROR_LOG(HLE,"WTF 1");
-						return Opcode(op);
-					} else {
-						return Opcode(op);
-					}
+		inst = MIPSComp::jit->GetOriginalOp(inst);
+		if (resolveReplacements && MIPS_IS_REPLACEMENT(inst)) {
+			u32 op;
+			if (GetReplacedOpAt(address, &op)) {
+				if (MIPS_IS_EMUHACK(op)) {
+					ERROR_LOG(HLE,"WTF 1");
+					return Opcode(op);
 				} else {
-					ERROR_LOG(HLE, "Replacement, but no replacement op? %08x", inst.encoding);
+					return Opcode(op);
 				}
+			} else {
+				ERROR_LOG(HLE, "Replacement, but no replacement op? %08x", inst.encoding);
 			}
-			return inst;
-		} else {
-			return inst;
 		}
+		return inst;
 	} else if (resolveReplacements && MIPS_IS_REPLACEMENT(inst.encoding)) {
 		u32 op;
 		if (GetReplacedOpAt(address, &op)) {
@@ -466,13 +474,7 @@ Opcode Read_Opcode_JIT(u32 address)
 {
 	Opcode inst = Opcode(Read_U32(address));
 	if (MIPS_IS_RUNBLOCK(inst.encoding) && MIPSComp::jit) {
-		JitBlockCache *bc = MIPSComp::jit->GetBlockCache();
-		int block_num = bc->GetBlockNumberFromEmuHackOp(inst, true);
-		if (block_num >= 0) {
-			return bc->GetOriginalFirstOp(block_num);
-		} else {
-			return inst;
-		}
+		return MIPSComp::jit->GetOriginalOp(inst);
 	} else {
 		return inst;
 	}

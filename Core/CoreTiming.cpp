@@ -20,10 +20,10 @@
 #include <cstdio>
 
 #include "base/logging.h"
+#include "base/mutex.h"
 #include "profiler/profiler.h"
 
 #include "Common/MsgHandler.h"
-#include "Common/StdMutex.h"
 #include "Common/Atomics.h"
 #include "Core/CoreTiming.h"
 #include "Core/Core.h"
@@ -86,10 +86,8 @@ s64 idledCycles;
 s64 lastGlobalTimeTicks;
 s64 lastGlobalTimeUs;
 
-static std::recursive_mutex externalEventSection;
+static recursive_mutex externalEventSection;
 
-// Warning: not included in save state.
-void (*advanceCallback)(int cyclesExecuted) = NULL;
 std::vector<MHzChangeCallback> mhzChangeCallbacks;
 
 void FireMhzChange() {
@@ -189,6 +187,7 @@ void AntiCrashCallback(u64 userdata, int cyclesLate)
 
 void RestoreRegisterEvent(int event_type, const char *name, TimedCallback callback)
 {
+	_assert_msg_(CORETIMING, event_type >= 0, "Invalid event type %d", event_type)
 	if (event_type >= (int) event_types.size())
 		event_types.resize(event_type + 1, EventType(AntiCrashCallback, "INVALID EVENT"));
 
@@ -227,7 +226,7 @@ void Shutdown()
 		delete ev;
 	}
 
-	std::lock_guard<std::recursive_mutex> lk(externalEventSection);
+	lock_guard lk(externalEventSection);
 	while(eventTsPool)
 	{
 		Event *ev = eventTsPool;
@@ -251,7 +250,7 @@ u64 GetIdleTicks()
 // schedule things to be executed on the main thread.
 void ScheduleEvent_Threadsafe(s64 cyclesIntoFuture, int event_type, u64 userdata)
 {
-	std::lock_guard<std::recursive_mutex> lk(externalEventSection);
+	lock_guard lk(externalEventSection);
 	Event *ne = GetNewTsEvent();
 	ne->time = GetTicks() + cyclesIntoFuture;
 	ne->type = event_type;
@@ -272,7 +271,7 @@ void ScheduleEvent_Threadsafe_Immediate(int event_type, u64 userdata)
 {
 	if(false) //Core::IsCPUThread())
 	{
-		std::lock_guard<std::recursive_mutex> lk(externalEventSection);
+		lock_guard lk(externalEventSection);
 		event_types[event_type].callback(userdata, 0);
 	}
 	else
@@ -309,7 +308,7 @@ void AddEventToQueue(Event* ne)
 
 // This must be run ONLY from within the cpu thread
 // cyclesIntoFuture may be VERY inaccurate if called from anything else
-// than Advance 
+// than Advance
 void ScheduleEvent(s64 cyclesIntoFuture, int event_type, u64 userdata)
 {
 	Event *ne = GetNewEvent();
@@ -367,7 +366,7 @@ s64 UnscheduleEvent(int event_type, u64 userdata)
 s64 UnscheduleThreadsafeEvent(int event_type, u64 userdata)
 {
 	s64 result = 0;
-	std::lock_guard<std::recursive_mutex> lk(externalEventSection);
+	lock_guard lk(externalEventSection);
 	if (!tsFirst)
 		return result;
 	while(tsFirst)
@@ -415,17 +414,11 @@ s64 UnscheduleThreadsafeEvent(int event_type, u64 userdata)
 	return result;
 }
 
-// Warning: not included in save state.
-void RegisterAdvanceCallback(void (*callback)(int cyclesExecuted))
-{
-	advanceCallback = callback;
-}
-
 void RegisterMHzChangeCallback(MHzChangeCallback callback) {
 	mhzChangeCallbacks.push_back(callback);
 }
 
-bool IsScheduled(int event_type) 
+bool IsScheduled(int event_type)
 {
 	if (!first)
 		return false;
@@ -477,7 +470,7 @@ void RemoveEvent(int event_type)
 
 void RemoveThreadsafeEvent(int event_type)
 {
-	std::lock_guard<std::recursive_mutex> lk(externalEventSection);
+	lock_guard lk(externalEventSection);
 	if (!tsFirst)
 	{
 		return;
@@ -505,7 +498,7 @@ void RemoveThreadsafeEvent(int event_type)
 	while (ptr)
 	{
 		if (ptr->type == event_type)
-		{	
+		{
 			prev->next = ptr->next;
 			if (ptr == tsLast)
 				tsLast = prev;
@@ -533,7 +526,7 @@ void ProcessFifoWaitEvents()
 	{
 		if (first->time <= (s64)GetTicks())
 		{
-//			LOG(TIMER, "[Scheduler] %s		 (%lld, %lld) ", 
+//			LOG(TIMER, "[Scheduler] %s		 (%lld, %lld) ",
 //				first->name ? first->name : "?", (u64)GetTicks(), (u64)first->time);
 			Event* evt = first;
 			first = first->next;
@@ -551,7 +544,7 @@ void MoveEvents()
 {
 	Common::AtomicStoreRelease(hasTsEvents, 0);
 
-	std::lock_guard<std::recursive_mutex> lk(externalEventSection);
+	lock_guard lk(externalEventSection);
 	// Move events from async queue into main queue
 	while (tsFirst)
 	{
@@ -577,9 +570,9 @@ void ForceCheck()
 	int cyclesExecuted = slicelength - currentMIPS->downcount;
 	globalTimer += cyclesExecuted;
 	// This will cause us to check for new events immediately.
-	currentMIPS->downcount = 0;
+	currentMIPS->downcount = -1;
 	// But let's not eat a bunch more time in Advance() because of this.
-	slicelength = 0;
+	slicelength = -1;
 }
 
 void Advance()
@@ -613,8 +606,6 @@ void Advance()
 		slicelength += diff;
 		currentMIPS->downcount += diff;
 	}
-	if (advanceCallback)
-		advanceCallback(cyclesExecuted);
 }
 
 void LogPendingEvents()
@@ -691,7 +682,7 @@ void Event_DoStateOld(PointerWrap &p, BaseEvent *ev)
 
 void DoState(PointerWrap &p)
 {
-	std::lock_guard<std::recursive_mutex> lk(externalEventSection);
+	lock_guard lk(externalEventSection);
 
 	auto s = p.Section("CoreTiming", 1, 3);
 	if (!s)

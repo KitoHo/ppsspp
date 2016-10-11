@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2013- PPSSPP Project.
+// Copyright (c) 2013- PPSSPP Project.
 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -19,6 +19,7 @@
 
 #include "base/functional.h"
 #include "base/colorutil.h"
+#include "base/display.h"
 #include "base/timeutil.h"
 #include "gfx_es2/draw_buffer.h"
 #include "math/curves.h"
@@ -27,33 +28,30 @@
 #include "ui/view.h"
 #include "ui/viewgroup.h"
 #include "ui/ui.h"
+#include "util/random/rng.h"
 #include "file/vfs.h"
-#include "UI/MiscScreens.h"
+#include "UI/ui_atlas.h"
+#include "UI/ControlMappingScreen.h"
+#include "UI/DisplayLayoutScreen.h"
 #include "UI/EmuScreen.h"
-#include "UI/MainScreen.h"
 #include "UI/GameInfoCache.h"
+#include "UI/GameSettingsScreen.h"
+#include "UI/MainScreen.h"
+#include "UI/MiscScreens.h"
 #include "Core/Config.h"
 #include "Core/Host.h"
 #include "Core/System.h"
 #include "Core/MIPS/JitCommon/JitCommon.h"
-#include "Core/MIPS/JitCommon/NativeJit.h"
 #include "Core/HLE/sceUtility.h"
-#include "Common/CPUDetect.h"
 #include "Common/FileUtil.h"
 #include "GPU/GPUState.h"
+#include "GPU/Common/PostShader.h"
 
 #include "ui_atlas.h"
 
 #ifdef _MSC_VER
 #pragma execution_character_set("utf-8")
 #endif
-
-#include "base/timeutil.h"
-#include "base/colorutil.h"
-#include "gfx_es2/draw_buffer.h"
-#include "util/random/rng.h"
-
-#include "UI/ui_atlas.h"
 
 static const int symbols[4] = {
 	I_CROSS,
@@ -87,10 +85,12 @@ void DrawBackground(UIContext &dc, float alpha = 1.0f) {
 		last_yres = yres;
 	}
 	
-	int img = I_BG;
 #ifdef GOLD
-	img = I_BG_GOLD;
+	int img = I_BG_GOLD;
+#else
+	int img = I_BG;
 #endif
+
 	ui_draw2d.DrawImageStretch(img, dc.GetBounds());
 	float t = time_now();
 	for (int i = 0; i < 100; i++) {
@@ -103,7 +103,7 @@ void DrawBackground(UIContext &dc, float alpha = 1.0f) {
 }
 
 void DrawGameBackground(UIContext &dc, const std::string &gamePath) {
-	GameInfo *ginfo = g_gameInfoCache.GetInfo(dc.GetThin3DContext(), gamePath, GAMEINFO_WANTBG);
+	GameInfo *ginfo = g_gameInfoCache->GetInfo(dc.GetThin3DContext(), gamePath, GAMEINFO_WANTBG);
 	dc.Flush();
 
 	if (ginfo) {
@@ -137,7 +137,17 @@ void HandleCommonMessages(const char *message, const char *value, ScreenManager 
 			MIPSComp::jit->ClearCache();
 		}
 		if (PSP_IsInited()) {
-			currentMIPS->UpdateCore(g_Config.bJit ? CPU_JIT : CPU_INTERPRETER);
+			currentMIPS->UpdateCore((CPUCore)g_Config.iCpuCore);
+		}
+	} else if (!strcmp(message, "control mapping")) {
+		manager->push(new ControlMappingScreen());
+	} else if (!strcmp(message, "display layout editor")) {
+		manager->push(new DisplayLayoutScreen());
+	} else if (!strcmp(message, "window minimized")) {
+		if (!strcmp(value, "true")) {
+			gstate_c.skipDrawReason |= SKIPDRAW_WINDOW_MINIMIZED;
+		} else {
+			gstate_c.skipDrawReason &= ~SKIPDRAW_WINDOW_MINIMIZED;
 		}
 	}
 }
@@ -156,8 +166,24 @@ void UIScreenWithGameBackground::DrawBackground(UIContext &dc) {
 	}
 }
 
+void UIScreenWithGameBackground::sendMessage(const char *message, const char *value) {
+	if (!strcmp(message, "settings")) {
+		screenManager()->push(new GameSettingsScreen(gamePath_));
+	} else {
+		UIScreenWithBackground::sendMessage(message, value);
+	}
+}
+
 void UIDialogScreenWithGameBackground::DrawBackground(UIContext &dc) {
 	DrawGameBackground(dc, gamePath_);
+}
+
+void UIDialogScreenWithGameBackground::sendMessage(const char *message, const char *value) {
+	if (!strcmp(message, "settings")) {
+		screenManager()->push(new GameSettingsScreen(gamePath_));
+	} else {
+		UIDialogScreenWithBackground::sendMessage(message, value);
+	}
 }
 
 void UIScreenWithBackground::sendMessage(const char *message, const char *value) {
@@ -167,6 +193,8 @@ void UIScreenWithBackground::sendMessage(const char *message, const char *value)
 		auto langScreen = new NewLanguageScreen(dev->T("Language"));
 		langScreen->OnChoice.Handle(this, &UIScreenWithBackground::OnLanguageChange);
 		screenManager()->push(langScreen);
+	} else if (!strcmp(message, "settings")) {
+		screenManager()->push(new GameSettingsScreen("", ""));
 	}
 }
 
@@ -206,12 +234,8 @@ void UIDialogScreenWithBackground::sendMessage(const char *message, const char *
 		auto langScreen = new NewLanguageScreen(dev->T("Language"));
 		langScreen->OnChoice.Handle(this, &UIDialogScreenWithBackground::OnLanguageChange);
 		screenManager()->push(langScreen);
-	} else if (!strcmp(message, "window minimized")) {
-		if (!strcmp(value, "true")) {
-			gstate_c.skipDrawReason |= SKIPDRAW_WINDOW_MINIMIZED;
-		} else {
-			gstate_c.skipDrawReason &= ~SKIPDRAW_WINDOW_MINIMIZED;
-		}
+	} else if (!strcmp(message, "settings")) {
+		screenManager()->push(new GameSettingsScreen("", ""));
 	}
 }
 
@@ -235,7 +259,8 @@ void PromptScreen::CreateViews() {
 	ViewGroup *leftColumn = new AnchorLayout(new LinearLayoutParams(1.0f));
 	root_->Add(leftColumn);
 
-	leftColumn->Add(new TextView(message_, ALIGN_LEFT, false, new AnchorLayoutParams(10, 10, NONE, NONE)))->SetClip(false);
+	float leftColumnWidth = dp_xres - actionMenuMargins.left - actionMenuMargins.right - 300.0f;
+	leftColumn->Add(new TextView(message_, ALIGN_LEFT | FLAG_WRAP_TEXT, false, new AnchorLayoutParams(leftColumnWidth, WRAP_CONTENT, 10, 10, NONE, NONE)))->SetClip(false);
 
 	ViewGroup *rightColumnItems = new LinearLayout(ORIENT_VERTICAL, new LinearLayoutParams(300, FILL_PARENT, actionMenuMargins));
 	root_->Add(rightColumnItems);
@@ -448,7 +473,7 @@ void LogoScreen::render() {
 	}
 
 #ifdef _WIN32
-	dc.DrawText(screenManager()->getThin3DContext()->GetInfoString(T3DInfo::APINAME), bounds.centerX(), bounds.y2() - 100, colorAlpha(0xFFFFFFFF, alphaText), ALIGN_CENTER);
+	dc.DrawText(screenManager()->getThin3DContext()->GetInfoString(T3DInfo::APINAME).c_str(), bounds.centerX(), bounds.y2() - 100, colorAlpha(0xFFFFFFFF, alphaText), ALIGN_CENTER);
 #endif
 
 	dc.End();

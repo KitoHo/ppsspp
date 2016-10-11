@@ -43,7 +43,8 @@ struct GLSLProgram : public GfxResourceHolder {
 	GLuint fsh_;
 	GLuint program_;
 
-	void GLLost();
+	void GLLost() override;
+	void GLRestore() override;
 };
 
 // C API, old skool. Not much point either...

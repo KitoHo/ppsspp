@@ -24,9 +24,11 @@
 extern float mouseDeltaX;
 extern float mouseDeltaY;
 
+class GraphicsContext;
+
 class WindowsHost : public Host {
 public:
-	WindowsHost(HWND mainWindow, HWND displayWindow);
+	WindowsHost(HINSTANCE hInstance, HWND mainWindow, HWND displayWindow);
 
 	~WindowsHost() {
 		UpdateConsolePosition();
@@ -37,7 +39,8 @@ public:
 	void UpdateUI() override;
 	void SetDebugMode(bool mode) override;
 
-	bool InitGraphics(std::string *error_message) override;
+	// If returns false, will return a null context
+	bool InitGraphics(std::string *error_message, GraphicsContext **ctx) override;
 	void PollControllers(InputState &input_state) override;
 	void ShutdownGraphics() override;
 
@@ -61,16 +64,22 @@ public:
 	bool CanCreateShortcut() override;
 	bool CreateDesktopShortcut(std::string argumentPath, std::string title) override;
 
+	void NotifyUserMessage(const std::string &message, float duration = 1.0f, u32 color = 0x00FFFFFF, const char *id = nullptr) override;
+
 	void GoFullscreen(bool) override;
 
 	std::shared_ptr<KeyboardDevice> keyboard;
+
+	GraphicsContext *GetGraphicsContext() { return gfx_; }
 
 private:
 	void SetConsolePosition();
 	void UpdateConsolePosition();
 
+	HINSTANCE hInstance_;
 	HWND displayWindow_;
 	HWND mainWindow_;
+	GraphicsContext *gfx_;
 
 	std::list<std::shared_ptr<InputDevice>> input;
 };

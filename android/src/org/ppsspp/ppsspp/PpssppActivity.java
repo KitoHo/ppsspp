@@ -1,31 +1,40 @@
 package org.ppsspp.ppsspp;
 
 import android.app.AlertDialog;
-import android.graphics.Point;
+import android.content.Intent;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Looper;
 import android.util.Log;
+import android.widget.Toast;
 
 public class PpssppActivity extends NativeActivity {
 	private static final String TAG = "PpssppActivity";
 	// Key used by shortcut.
 	public static final String SHORTCUT_EXTRA_KEY = "org.ppsspp.ppsspp.Shortcuts";
-	
+
 	private static boolean m_hasUnsupportedABI = false;
 	private static boolean m_hasNoNativeBinary = false;
 
-	static {
+	public static boolean libraryLoaded = false;
+
+	@SuppressWarnings("deprecation")
+	public static void CheckABIAndLoadLibrary() {
 		if (Build.CPU_ABI.equals("armeabi")) {
 			m_hasUnsupportedABI = true;
 		} else {
 			try {
 				System.loadLibrary("ppsspp_jni");
+				libraryLoaded = true;
 			} catch (UnsatisfiedLinkError e) {
 				Log.e(TAG, "LoadLibrary failed, UnsatifiedLinkError: " + e.toString());
 				m_hasNoNativeBinary = true;
 			}
 		}
+	}
+
+	static {
+		CheckABIAndLoadLibrary();
 	}
 
 	public PpssppActivity() {
@@ -36,6 +45,7 @@ public class PpssppActivity extends NativeActivity {
 	public void onCreate(Bundle savedInstanceState) {
 		if (m_hasUnsupportedABI || m_hasNoNativeBinary) {
 			new Thread() {
+				@SuppressWarnings("deprecation")
 				@Override
 				public void run() {
 					Looper.prepare();
@@ -47,74 +57,33 @@ public class PpssppActivity extends NativeActivity {
 					}
 					Looper.loop();
 				}
-				
+
 			}.start();
-			
+
 			try {
 				Thread.sleep(3000);
 			} catch (InterruptedException e) {
 				e.printStackTrace();
 			}
-			
+
 			System.exit(-1);
 			return;
 		}
 
 		// In case app launched from homescreen shortcut, get shortcut parameter
 		// using Intent extra string. Intent extra will be null if launch normal
-		// (from app drawer).
-		super.setShortcutParam(getIntent().getStringExtra(SHORTCUT_EXTRA_KEY));
+		// (from app drawer or file explorer).
+		Intent intent = getIntent();
+		String action = intent.getAction();
+		if (Intent.ACTION_VIEW.equals(action)) {
+			String path = intent.getData().getPath();
+			super.setShortcutParam(path);
+			Toast.makeText(getApplicationContext(), path, Toast.LENGTH_SHORT).show();
+		} else {
+			super.setShortcutParam(getIntent().getStringExtra(SHORTCUT_EXTRA_KEY));
+		}
 
 		super.onCreate(savedInstanceState);
-	}
-
-
-	private void correctRatio(Point sz, float scale) {
-		float x = sz.x;
-		float y = sz.y;
-		float ratio = x / y;
-		// Log.i(TAG, "Considering size: " + sz.x + "x" + sz.y + "=" + ratio);
-		float targetRatio;
-		if (x >= y) {
-			targetRatio = 480.0f / 272.0f;
-			x = 480.f * scale;
-			y = 272.f * scale;
-		} else {
-			targetRatio = 272.0f / 480.0f;
-			x = 272.0f * scale;
-			y = 480.0f * scale;
-		}
-		float correction = targetRatio / ratio;
-		// Log.i(TAG, "Target ratio: " + targetRatio + " ratio: " + ratio + " correction: " + correction);
-		if (ratio < targetRatio) {
-			y *= correction;
-		} else {
-			x /= correction;
-		}
-		sz.x = (int)x;
-		sz.y = (int)y;
-		// Log.i(TAG, "Corrected ratio: " + sz.x + "x" + sz.y);
-	}
-
-	@Override
-	public void getDesiredBackbufferSize(Point sz) {
-		GetScreenSize(sz);
-		String config = NativeApp.queryConfig("hwScale");
-		int scale;
-		try {
-			scale = Integer.parseInt(config);
-			if (scale == 0) {
-				sz.x = 0;
-				sz.y = 0;
-				return;
-			}
-		}
-		catch (NumberFormatException e) {
-			sz.x = 0;
-			sz.y = 0;
-			return;
-		}
-		correctRatio(sz, (float)scale);
 	}
 
 	// called by the C++ code through JNI. Dispatch anything we can't directly handle
@@ -123,6 +92,7 @@ public class PpssppActivity extends NativeActivity {
 		final String cmd = command;
 		final String param = parameter;
 		runOnUiThread(new Runnable() {
+			@Override
 			public void run() {
 				processCommand(cmd, param);
 			}
